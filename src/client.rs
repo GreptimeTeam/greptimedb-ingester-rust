@@ -45,7 +45,8 @@ impl Inner {
     fn with_manager(channel_manager: ChannelManager) -> Self {
         Self {
             channel_manager,
-            ..Default::default()
+            peers: Default::default(),
+            load_balance: Default::default(),
         }
     }
 
@@ -152,8 +153,8 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn test_inner() {
+    #[tokio::test]
+    async fn test_inner() {
         let inner = Inner::default();
 
         assert!(matches!(
