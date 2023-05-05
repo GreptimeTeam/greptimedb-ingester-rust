@@ -46,7 +46,7 @@ impl Database {
         Self {
             dbname: dbname.into(),
             client,
-            ..Default::default()
+            auth_header: None,
         }
     }
 
