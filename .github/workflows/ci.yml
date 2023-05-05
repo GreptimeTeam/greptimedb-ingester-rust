@@ -12,7 +12,7 @@ on:
       - '.gitignore'
   push:
     branches:
-      - "main"
+      - "master"
       - "develop"
     paths-ignore:
       - 'docs/**'
