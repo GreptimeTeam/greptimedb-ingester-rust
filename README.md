@@ -9,9 +9,9 @@ A Rust client for GreptimeDB gRPC protocol.
 - [x] gRPC deletes
 - [ ] Arrow Flight API
   - [ ] DDL
-  - [ ] SQL Query
-  - [ ] PromQL Query
-- [ ] Prometheus Gateway API
+  - [ ] SQL query
+  - [ ] PromQL query
+- [ ] Prometheus gateway API
 
 
 ## License
