@@ -77,6 +77,9 @@ pub enum Error {
 
     #[snafu(display("Illegal Database response: {err_msg}"))]
     IllegalDatabaseResponse { err_msg: String },
+
+    #[snafu(display("Failed to send request with streaming: {}", err_msg))]
+    ClientStreaming { err_msg: String, location: Location },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
