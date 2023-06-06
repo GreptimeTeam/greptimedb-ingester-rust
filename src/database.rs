@@ -16,7 +16,7 @@ use crate::api::v1::auth_header::AuthScheme;
 use crate::api::v1::greptime_request::Request;
 use crate::api::v1::{
     greptime_response, AffectedRows, AuthHeader, DeleteRequest, GreptimeRequest, InsertRequest,
-    RequestHeader,
+    InsertRequests, RequestHeader,
 };
 
 use snafu::OptionExt;
@@ -64,8 +64,9 @@ impl Database {
         });
     }
 
-    pub async fn insert(&self, request: InsertRequest) -> Result<u32> {
-        self.handle(Request::Insert(request)).await
+    pub async fn insert(&self, requests: Vec<InsertRequest>) -> Result<u32> {
+        self.handle(Request::Inserts(InsertRequests { inserts: requests }))
+            .await
     }
 
     pub async fn delete(&self, request: DeleteRequest) -> Result<u32> {
