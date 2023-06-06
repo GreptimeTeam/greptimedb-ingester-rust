@@ -5,7 +5,7 @@ A Rust client for GreptimeDB gRPC protocol.
 ## Status
 
 - [x] gRPC inserts
-- [ ] gRPC stream inserts
+- [x] gRPC stream inserts
 - [x] gRPC deletes
 - [ ] Arrow Flight API
   - [ ] DDL
