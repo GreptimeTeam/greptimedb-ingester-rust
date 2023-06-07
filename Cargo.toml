@@ -1,5 +1,5 @@
 [package]
-name = "greptimedb-client-rust"
+name = "greptimedb-client"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
@@ -24,3 +24,6 @@ tower = "0.4"
 
 [build-dependencies]
 tonic-build = "0.9"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
