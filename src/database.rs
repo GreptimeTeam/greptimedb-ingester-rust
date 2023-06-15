@@ -21,12 +21,9 @@ use crate::api::v1::{
 use crate::stream_insert::StreamInsertor;
 
 use snafu::OptionExt;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::{mpsc, OnceCell};
-use tokio_stream::wrappers::ReceiverStream;
 
 use crate::error::IllegalDatabaseResponseSnafu;
-use crate::{error, Client, Result};
+use crate::{Client, Result};
 
 #[derive(Clone, Debug, Default)]
 pub struct Database {
@@ -35,7 +32,6 @@ pub struct Database {
     dbname: String,
 
     client: Client,
-    streaming_client: OnceCell<Sender<GreptimeRequest>>,
     auth_header: Option<AuthHeader>,
 }
 
@@ -51,7 +47,6 @@ impl Database {
         Self {
             dbname: dbname.into(),
             client,
-            streaming_client: OnceCell::new(),
             auth_header: None,
         }
     }
@@ -84,22 +79,6 @@ impl Database {
         Ok(stream_inserter)
     }
 
-    pub async fn streaming_insert(&self, requests: InsertRequests) -> Result<()> {
-        let streaming_client = self
-            .streaming_client
-            .get_or_try_init(|| self.handle_client_streaming())
-            .await?;
-
-        let request = self.to_rpc_request(Request::Inserts(requests));
-
-        streaming_client.send(request).await.map_err(|e| {
-            error::ClientStreamingSnafu {
-                err_msg: e.to_string(),
-            }
-            .build()
-        })
-    }
-
     pub async fn delete(&self, request: DeleteRequest) -> Result<u32> {
         self.handle(Request::Delete(request)).await
     }
@@ -117,14 +96,6 @@ impl Database {
             })?;
         let greptime_response::Response::AffectedRows(AffectedRows { value }) = response;
         Ok(value)
-    }
-
-    async fn handle_client_streaming(&self) -> Result<Sender<GreptimeRequest>> {
-        let mut client = self.client.make_database_client()?.inner;
-        let (sender, receiver) = mpsc::channel::<GreptimeRequest>(65536);
-        let receiver = ReceiverStream::new(receiver);
-        client.handle_requests(receiver).await?;
-        Ok(sender)
     }
 
     #[inline]

@@ -136,7 +136,7 @@ fn to_insert_request(records: Vec<WeatherRecord>) -> InsertRequest {
         Column {
             column_name: "collector".to_owned(),
             values: Some(column::Values {
-                string_values: collectors.into_iter().map(|s| s.to_owned()).collect(),
+                string_values: collectors.into_iter().collect(),
                 ..Default::default()
             }),
             semantic_type: SemanticType::Tag as i32,
