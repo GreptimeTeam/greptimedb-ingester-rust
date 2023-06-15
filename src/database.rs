@@ -18,6 +18,7 @@ use crate::api::v1::{
     greptime_response, AffectedRows, AuthHeader, DeleteRequest, GreptimeRequest, InsertRequest,
     InsertRequests, RequestHeader,
 };
+use crate::stream_insert::StreamInsertor;
 
 use snafu::OptionExt;
 use tokio::sync::mpsc::Sender;
@@ -72,6 +73,15 @@ impl Database {
     pub async fn insert(&self, requests: Vec<InsertRequest>) -> Result<u32> {
         self.handle(Request::Inserts(InsertRequests { inserts: requests }))
             .await
+    }
+
+    pub fn streaming_insertor(&self) -> Result<StreamInsertor> {
+        let client = self.client.make_database_client()?.inner;
+
+        let stream_inserter =
+            StreamInsertor::new(client, self.dbname().to_string(), self.auth_header.clone());
+
+        Ok(stream_inserter)
     }
 
     pub async fn streaming_insert(&self, requests: InsertRequests) -> Result<()> {
