@@ -28,6 +28,19 @@ use tonic::{Response, Status};
 use crate::error::Result;
 use crate::error::{self, IllegalDatabaseResponseSnafu};
 
+/// A structure that provides some methods for streaming data insert.
+///
+/// [`StreamInsertor`] cannot be constructed via the `StreamInsertor::new` method.
+/// You can use the following way to obtain [StreamInsertor].
+///
+/// ```ignore
+/// let grpc_client = Client::with_urls(vec!["127.0.0.1:4002"]);
+/// let client = Database::new_with_dbname("db_name", grpc_client);
+/// let stream_insertor = client.streaming_insertor().unwrap();
+/// ```
+///
+/// If you want to see a concrete usage example, please see
+/// [stream_insertor.rs](https://github.com/GreptimeTeam/greptimedb-client-rust/tree/master/examples/stream_ingest.rs).
 pub struct StreamInsertor {
     sender: mpsc::Sender<GreptimeRequest>,
 
@@ -39,7 +52,7 @@ pub struct StreamInsertor {
 }
 
 impl StreamInsertor {
-    pub fn new(
+    pub(crate) fn new(
         mut client: GreptimeDatabaseClient<Channel>,
         dbname: String,
         auth_header: Option<AuthHeader>,
