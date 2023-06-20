@@ -22,14 +22,32 @@ use greptimedb_client::{Client, Database, DEFAULT_SCHEMA_NAME};
 async fn main() {
     let greptimedb_endpoint =
         std::env::var("GREPTIMEDB_ENDPOINT").unwrap_or_else(|_| "localhost:4001".to_owned());
+
     let greptimedb_dbname =
         std::env::var("GREPTIMEDB_DBNAME").unwrap_or_else(|_| DEFAULT_SCHEMA_NAME.to_owned());
 
     let grpc_client = Client::with_urls(vec![&greptimedb_endpoint]);
+
     let client = Database::new_with_dbname(greptimedb_dbname, grpc_client);
 
-    let records = weather_records();
-    let result = client.insert(vec![to_insert_request(records)]).await;
+    let stream_inserter = client.streaming_inserter().unwrap();
+
+    if let Err(e) = stream_inserter
+        .insert(vec![to_insert_request(weather_records_1())])
+        .await
+    {
+        eprintln!("Error: {e}");
+    }
+
+    if let Err(e) = stream_inserter
+        .insert(vec![to_insert_request(weather_records_2())])
+        .await
+    {
+        eprintln!("Error: {e}");
+    }
+
+    let result = stream_inserter.finish().await;
+
     match result {
         Ok(rows) => {
             println!("Rows written: {rows}");
@@ -48,7 +66,7 @@ struct WeatherRecord {
     humidity: i32,
 }
 
-fn weather_records() -> Vec<WeatherRecord> {
+fn weather_records_1() -> Vec<WeatherRecord> {
     vec![
         WeatherRecord::new(1686109527000, "c1".to_owned(), 26.4, 15),
         WeatherRecord::new(1686023127000, "c1".to_owned(), 29.3, 20),
@@ -56,6 +74,17 @@ fn weather_records() -> Vec<WeatherRecord> {
         WeatherRecord::new(1686109527000, "c2".to_owned(), 20.4, 67),
         WeatherRecord::new(1686023127000, "c2".to_owned(), 18.0, 74),
         WeatherRecord::new(1685936727000, "c2".to_owned(), 19.2, 81),
+    ]
+}
+
+fn weather_records_2() -> Vec<WeatherRecord> {
+    vec![
+        WeatherRecord::new(1686109527001, "c3".to_owned(), 26.4, 15),
+        WeatherRecord::new(1686023127002, "c3".to_owned(), 29.3, 20),
+        WeatherRecord::new(1685936727003, "c3".to_owned(), 31.8, 13),
+        WeatherRecord::new(1686109527004, "c4".to_owned(), 20.4, 67),
+        WeatherRecord::new(1686023127005, "c4".to_owned(), 18.0, 74),
+        WeatherRecord::new(1685936727006, "c4".to_owned(), 19.2, 81),
     ]
 }
 

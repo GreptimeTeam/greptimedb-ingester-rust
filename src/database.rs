@@ -18,14 +18,12 @@ use crate::api::v1::{
     greptime_response, AffectedRows, AuthHeader, DeleteRequest, GreptimeRequest, InsertRequest,
     InsertRequests, RequestHeader,
 };
+use crate::stream_insert::StreamInserter;
 
 use snafu::OptionExt;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::{mpsc, OnceCell};
-use tokio_stream::wrappers::ReceiverStream;
 
 use crate::error::IllegalDatabaseResponseSnafu;
-use crate::{error, Client, Result};
+use crate::{Client, Result};
 
 #[derive(Clone, Debug, Default)]
 pub struct Database {
@@ -34,7 +32,6 @@ pub struct Database {
     dbname: String,
 
     client: Client,
-    streaming_client: OnceCell<Sender<GreptimeRequest>>,
     auth_header: Option<AuthHeader>,
 }
 
@@ -50,7 +47,6 @@ impl Database {
         Self {
             dbname: dbname.into(),
             client,
-            streaming_client: OnceCell::new(),
             auth_header: None,
         }
     }
@@ -74,20 +70,24 @@ impl Database {
             .await
     }
 
-    pub async fn streaming_insert(&self, requests: InsertRequests) -> Result<()> {
-        let streaming_client = self
-            .streaming_client
-            .get_or_try_init(|| self.handle_client_streaming())
-            .await?;
+    pub fn streaming_inserter(&self) -> Result<StreamInserter> {
+        self.streaming_inserter_with_channel_size(1024)
+    }
 
-        let request = self.to_rpc_request(Request::Inserts(requests));
+    pub fn streaming_inserter_with_channel_size(
+        &self,
+        channel_size: usize,
+    ) -> Result<StreamInserter> {
+        let client = self.client.make_database_client()?.inner;
 
-        streaming_client.send(request).await.map_err(|e| {
-            error::ClientStreamingSnafu {
-                err_msg: e.to_string(),
-            }
-            .build()
-        })
+        let stream_inserter = StreamInserter::new(
+            client,
+            self.dbname().to_string(),
+            self.auth_header.clone(),
+            channel_size,
+        );
+
+        Ok(stream_inserter)
     }
 
     pub async fn delete(&self, request: DeleteRequest) -> Result<u32> {
@@ -107,14 +107,6 @@ impl Database {
             })?;
         let greptime_response::Response::AffectedRows(AffectedRows { value }) = response;
         Ok(value)
-    }
-
-    async fn handle_client_streaming(&self) -> Result<Sender<GreptimeRequest>> {
-        let mut client = self.client.make_database_client()?.inner;
-        let (sender, receiver) = mpsc::channel::<GreptimeRequest>(65536);
-        let receiver = ReceiverStream::new(receiver);
-        client.handle_requests(receiver).await?;
-        Ok(sender)
     }
 
     #[inline]
