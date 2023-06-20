@@ -71,10 +71,21 @@ impl Database {
     }
 
     pub fn streaming_insertor(&self) -> Result<StreamInsertor> {
+        self.streaming_insertor_with_channel_size(1024)
+    }
+
+    pub fn streaming_insertor_with_channel_size(
+        &self,
+        channel_size: usize,
+    ) -> Result<StreamInsertor> {
         let client = self.client.make_database_client()?.inner;
 
-        let stream_inserter =
-            StreamInsertor::new(client, self.dbname().to_string(), self.auth_header.clone());
+        let stream_inserter = StreamInsertor::new(
+            client,
+            self.dbname().to_string(),
+            self.auth_header.clone(),
+            channel_size,
+        );
 
         Ok(stream_inserter)
     }

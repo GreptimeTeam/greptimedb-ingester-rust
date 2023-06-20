@@ -31,7 +31,7 @@ use crate::error::{self, IllegalDatabaseResponseSnafu};
 /// A structure that provides some methods for streaming data insert.
 ///
 /// [`StreamInsertor`] cannot be constructed via the `StreamInsertor::new` method.
-/// You can use the following way to obtain [StreamInsertor].
+/// You can use the following way to obtain [`StreamInsertor`].
 ///
 /// ```ignore
 /// let grpc_client = Client::with_urls(vec!["127.0.0.1:4002"]);
@@ -56,8 +56,9 @@ impl StreamInsertor {
         mut client: GreptimeDatabaseClient<Channel>,
         dbname: String,
         auth_header: Option<AuthHeader>,
+        channel_size: usize,
     ) -> StreamInsertor {
-        let (send, recv) = tokio::sync::mpsc::channel(1024);
+        let (send, recv) = tokio::sync::mpsc::channel(channel_size);
 
         let join: JoinHandle<std::result::Result<Response<GreptimeResponse>, Status>> =
             tokio::spawn(async move {
