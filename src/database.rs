@@ -18,7 +18,7 @@ use crate::api::v1::{
     greptime_response, AffectedRows, AuthHeader, DeleteRequest, GreptimeRequest, InsertRequest,
     InsertRequests, RequestHeader,
 };
-use crate::stream_insert::StreamInsertor;
+use crate::stream_insert::StreamInserter;
 
 use snafu::OptionExt;
 
@@ -70,17 +70,17 @@ impl Database {
             .await
     }
 
-    pub fn streaming_insertor(&self) -> Result<StreamInsertor> {
-        self.streaming_insertor_with_channel_size(1024)
+    pub fn streaming_inserter(&self) -> Result<StreamInserter> {
+        self.streaming_inserter_with_channel_size(1024)
     }
 
-    pub fn streaming_insertor_with_channel_size(
+    pub fn streaming_inserter_with_channel_size(
         &self,
         channel_size: usize,
-    ) -> Result<StreamInsertor> {
+    ) -> Result<StreamInserter> {
         let client = self.client.make_database_client()?.inner;
 
-        let stream_inserter = StreamInsertor::new(
+        let stream_inserter = StreamInserter::new(
             client,
             self.dbname().to_string(),
             self.auth_header.clone(),

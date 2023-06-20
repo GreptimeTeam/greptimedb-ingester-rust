@@ -30,23 +30,23 @@ async fn main() {
 
     let client = Database::new_with_dbname(greptimedb_dbname, grpc_client);
 
-    let stream_insertor = client.streaming_insertor().unwrap();
+    let stream_inserter = client.streaming_inserter().unwrap();
 
-    if let Err(e) = stream_insertor
+    if let Err(e) = stream_inserter
         .insert(vec![to_insert_request(weather_records_1())])
         .await
     {
         eprintln!("Error: {e}");
     }
 
-    if let Err(e) = stream_insertor
+    if let Err(e) = stream_inserter
         .insert(vec![to_insert_request(weather_records_2())])
         .await
     {
         eprintln!("Error: {e}");
     }
 
-    let result = stream_insertor.finish().await;
+    let result = stream_inserter.finish().await;
 
     match result {
         Ok(rows) => {

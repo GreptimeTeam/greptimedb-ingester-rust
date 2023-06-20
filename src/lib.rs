@@ -23,6 +23,6 @@ mod stream_insert;
 pub use self::client::Client;
 pub use self::database::Database;
 pub use self::error::{Error, Result};
-pub use self::stream_insert::StreamInsertor;
+pub use self::stream_insert::StreamInserter;
 
 pub const DEFAULT_SCHEMA_NAME: &str = "public";

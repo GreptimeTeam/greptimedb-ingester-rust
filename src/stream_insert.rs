@@ -30,18 +30,18 @@ use crate::error::{self, IllegalDatabaseResponseSnafu};
 
 /// A structure that provides some methods for streaming data insert.
 ///
-/// [`StreamInsertor`] cannot be constructed via the `StreamInsertor::new` method.
-/// You can use the following way to obtain [`StreamInsertor`].
+/// [`StreamInserter`] cannot be constructed via the `StreamInserter::new` method.
+/// You can use the following way to obtain [`StreamInserter`].
 ///
 /// ```ignore
 /// let grpc_client = Client::with_urls(vec!["127.0.0.1:4002"]);
 /// let client = Database::new_with_dbname("db_name", grpc_client);
-/// let stream_insertor = client.streaming_insertor().unwrap();
+/// let stream_inserter = client.streaming_inserter().unwrap();
 /// ```
 ///
 /// If you want to see a concrete usage example, please see
-/// [stream_insertor.rs](https://github.com/GreptimeTeam/greptimedb-client-rust/tree/master/examples/stream_ingest.rs).
-pub struct StreamInsertor {
+/// [stream_inserter.rs](https://github.com/GreptimeTeam/greptimedb-client-rust/tree/master/examples/stream_ingest.rs).
+pub struct StreamInserter {
     sender: mpsc::Sender<GreptimeRequest>,
 
     auth_header: Option<AuthHeader>,
@@ -51,13 +51,13 @@ pub struct StreamInsertor {
     join: JoinHandle<std::result::Result<Response<GreptimeResponse>, Status>>,
 }
 
-impl StreamInsertor {
+impl StreamInserter {
     pub(crate) fn new(
         mut client: GreptimeDatabaseClient<Channel>,
         dbname: String,
         auth_header: Option<AuthHeader>,
         channel_size: usize,
-    ) -> StreamInsertor {
+    ) -> StreamInserter {
         let (send, recv) = tokio::sync::mpsc::channel(channel_size);
 
         let join: JoinHandle<std::result::Result<Response<GreptimeResponse>, Status>> =
@@ -66,7 +66,7 @@ impl StreamInsertor {
                 client.handle_requests(recv_stream).await
             });
 
-        StreamInsertor {
+        StreamInserter {
             sender: send,
             auth_header,
             dbname,
