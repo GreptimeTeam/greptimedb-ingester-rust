@@ -38,33 +38,6 @@ pub enum Error {
     #[snafu(display("Unknown proto column datatype: {}", datatype))]
     UnknownColumnDataType { datatype: i32, location: Location },
 
-    // #[snafu(display("Failed to create column datatype from {:?}", from))]
-    // IntoColumnDataType {
-    //     from: ConcreteDataType,
-    //     location: Location,
-    // },
-
-    // #[snafu(display(
-    //     "Failed to convert column default constraint, column: {}, source: {}",
-    //     column,
-    //     source
-    // ))]
-    // ConvertColumnDefaultConstraint {
-    //     column: String,
-    //     #[snafu(backtrace)]
-    //     source: datatypes::error::Error,
-    // },
-
-    // #[snafu(display(
-    //     "Invalid column default constraint, column: {}, source: {}",
-    //     column,
-    //     source
-    // ))]
-    // InvalidColumnDefaultConstraint {
-    //     column: String,
-    //     #[snafu(backtrace)]
-    //     source: datatypes::error::Error,
-    // },
     #[snafu(display("Illegal GRPC client state: {}", err_msg))]
     IllegalGrpcClientState { err_msg: String, location: Location },
 
@@ -97,5 +70,17 @@ impl From<Status> for Error {
         let msg = get_metadata_value(&e, INNER_ERROR_MSG).unwrap_or(e.to_string());
 
         Self::Server { status: e, msg }
+    }
+}
+
+impl Error {
+    /// Indicate if the error is retriable
+    pub fn is_retriable(&self) -> bool {
+        !matches!(
+            self,
+            Self::InvalidTlsConfig { .. }
+                | Self::MissingField { .. }
+                | Self::InvalidConfigFilePath { .. }
+        )
     }
 }
