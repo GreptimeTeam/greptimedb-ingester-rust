@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -199,9 +200,9 @@ impl ChannelManager {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientTlsOption {
-    pub server_ca_cert_path: String,
-    pub client_cert_path: String,
-    pub client_key_path: String,
+    pub server_ca_cert_path: PathBuf,
+    pub client_cert_path: PathBuf,
+    pub client_key_path: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -522,9 +523,9 @@ mod tests {
             .tcp_keepalive(Duration::from_secs(2))
             .tcp_nodelay(false)
             .client_tls_config(ClientTlsOption {
-                server_ca_cert_path: "some_server_path".to_string(),
-                client_cert_path: "some_cert_path".to_string(),
-                client_key_path: "some_key_path".to_string(),
+                server_ca_cert_path: "some_server_path".into(),
+                client_cert_path: "some_cert_path".into(),
+                client_key_path: "some_key_path".into(),
             });
 
         assert_eq!(
@@ -542,9 +543,9 @@ mod tests {
                 tcp_keepalive: Some(Duration::from_secs(2)),
                 tcp_nodelay: false,
                 client_tls: Some(ClientTlsOption {
-                    server_ca_cert_path: "some_server_path".to_string(),
-                    client_cert_path: "some_cert_path".to_string(),
-                    client_key_path: "some_key_path".to_string(),
+                    server_ca_cert_path: "some_server_path".into(),
+                    client_cert_path: "some_cert_path".into(),
+                    client_key_path: "some_key_path".into(),
                 }),
             },
             cfg
