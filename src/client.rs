@@ -25,6 +25,8 @@ use tonic::transport::Channel;
 use crate::load_balance::{LoadBalance, Loadbalancer};
 use crate::{error, Result};
 
+const MAX_MESSAGE_SIZE: usize = 512 * 1024 * 1024;
+
 pub(crate) struct DatabaseClient {
     pub(crate) inner: GreptimeDatabaseClient<Channel>,
 }
@@ -125,9 +127,9 @@ impl Client {
 
     pub(crate) fn make_database_client(&self) -> Result<DatabaseClient> {
         let (_, channel) = self.find_channel()?;
-        Ok(DatabaseClient {
-            inner: GreptimeDatabaseClient::new(channel),
-        })
+        let client =
+            GreptimeDatabaseClient::new(channel).max_decoding_message_size(MAX_MESSAGE_SIZE);
+        Ok(DatabaseClient { inner: client })
     }
 
     pub async fn health_check(&self) -> Result<()> {
