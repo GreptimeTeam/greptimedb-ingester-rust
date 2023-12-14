@@ -16,7 +16,7 @@ use crate::api::v1::auth_header::AuthScheme;
 use crate::api::v1::greptime_request::Request;
 use crate::api::v1::{
     greptime_response, AffectedRows, AuthHeader, DeleteRequests, GreptimeRequest, InsertRequest,
-    InsertRequests, RequestHeader,
+    InsertRequests, RequestHeader, RowInsertRequests,
 };
 use crate::stream_insert::StreamInserter;
 
@@ -72,9 +72,15 @@ impl Database {
     }
 
     /// Write insert requests to GreptimeDB and get rows written
+    #[deprecated(note = "Use row_insert instead.")]
     pub async fn insert(&self, requests: Vec<InsertRequest>) -> Result<u32> {
         self.handle(Request::Inserts(InsertRequests { inserts: requests }))
             .await
+    }
+
+    /// Write Row based insert reuqests to GreptimeDB and get rows written
+    pub async fn row_insert(&self, requests: RowInsertRequests) -> Result<u32> {
+        self.handle(Request::RowInserts(requests)).await
     }
 
     /// Initialise a streaming insert handle, using default buffer size `1024`
