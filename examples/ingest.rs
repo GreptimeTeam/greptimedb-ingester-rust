@@ -14,7 +14,6 @@
 
 use derive_new::new;
 
-use greptimedb_client::api::v1::column::*;
 use greptimedb_client::api::v1::*;
 use greptimedb_client::{Client, Database, DEFAULT_SCHEMA_NAME};
 
@@ -29,7 +28,7 @@ async fn main() {
     let client = Database::new_with_dbname(greptimedb_dbname, grpc_client);
 
     let records = weather_records();
-    let result = client.insert(vec![to_insert_request(records)]).await;
+    let result = client.row_insert(to_insert_request(records)).await;
     match result {
         Ok(rows) => {
             println!("Rows written: {rows}");
@@ -52,10 +51,39 @@ fn weather_records() -> Vec<WeatherRecord> {
     vec![
         WeatherRecord::new(1686109527000, "c1".to_owned(), 26.4, 15),
         WeatherRecord::new(1686023127000, "c1".to_owned(), 29.3, 20),
-        WeatherRecord::new(1685936727000, "c1".to_owned(), 31.8, 13),
+        WeatherRecord::new(1685936727010, "c1".to_owned(), 31.8, 13),
         WeatherRecord::new(1686109527000, "c2".to_owned(), 20.4, 67),
         WeatherRecord::new(1686023127000, "c2".to_owned(), 18.0, 74),
         WeatherRecord::new(1685936727000, "c2".to_owned(), 19.2, 81),
+    ]
+}
+
+fn weather_schema() -> Vec<ColumnSchema> {
+    vec![
+        ColumnSchema {
+            column_name: "ts".to_owned(),
+            semantic_type: SemanticType::Timestamp as i32,
+            datatype: ColumnDataType::TimestampMillisecond as i32,
+            ..Default::default()
+        },
+        ColumnSchema {
+            column_name: "collector".to_owned(),
+            semantic_type: SemanticType::Tag as i32,
+            datatype: ColumnDataType::String as i32,
+            ..Default::default()
+        },
+        ColumnSchema {
+            column_name: "temperature".to_owned(),
+            semantic_type: SemanticType::Field as i32,
+            datatype: ColumnDataType::Float32 as i32,
+            ..Default::default()
+        },
+        ColumnSchema {
+            column_name: "humidity".to_owned(),
+            semantic_type: SemanticType::Field as i32,
+            datatype: ColumnDataType::Int32 as i32,
+            ..Default::default()
+        },
     ]
 }
 
@@ -69,79 +97,36 @@ fn weather_records() -> Vec<WeatherRecord> {
 /// - `temperature`: a value field of f32
 /// - `humidity`: a value field of i32
 ///
-fn to_insert_request(records: Vec<WeatherRecord>) -> InsertRequest {
-    // convert records into columns
-    let rows = records.len();
+fn to_insert_request(records: Vec<WeatherRecord>) -> RowInsertRequests {
+    let rows = records
+        .into_iter()
+        .map(|record| Row {
+            values: vec![
+                Value {
+                    value_data: Some(value::ValueData::TimestampMillisecondValue(
+                        record.timestamp_millis,
+                    )),
+                },
+                Value {
+                    value_data: Some(value::ValueData::StringValue(record.collector)),
+                },
+                Value {
+                    value_data: Some(value::ValueData::F32Value(record.temperature)),
+                },
+                Value {
+                    value_data: Some(value::ValueData::I32Value(record.humidity)),
+                },
+            ],
+        })
+        .collect();
 
-    // transpose records into columns
-    let (timestamp_millis, collectors, temp, humidity) = records.into_iter().fold(
-        (
-            Vec::with_capacity(rows),
-            Vec::with_capacity(rows),
-            Vec::with_capacity(rows),
-            Vec::with_capacity(rows),
-        ),
-        |mut acc, rec| {
-            acc.0.push(rec.timestamp_millis);
-            acc.1.push(rec.collector);
-            acc.2.push(rec.temperature);
-            acc.3.push(rec.humidity);
-
-            acc
-        },
-    );
-
-    let columns = vec![
-        // timestamp column: `ts`
-        Column {
-            column_name: "ts".to_owned(),
-            values: Some(column::Values {
-                ts_millisecond_values: timestamp_millis,
-                ..Default::default()
+    RowInsertRequests {
+        inserts: vec![RowInsertRequest {
+            table_name: "weather_demo".to_owned(),
+            rows: Some(Rows {
+                schema: weather_schema(),
+                rows,
             }),
-            semantic_type: SemanticType::Timestamp as i32,
-            datatype: ColumnDataType::TimestampMillisecond as i32,
-            ..Default::default()
-        },
-        // tag column: collectors
-        Column {
-            column_name: "collector".to_owned(),
-            values: Some(column::Values {
-                string_values: collectors.into_iter().collect(),
-                ..Default::default()
-            }),
-            semantic_type: SemanticType::Tag as i32,
-            datatype: ColumnDataType::String as i32,
-            ..Default::default()
-        },
-        // field column: temperature
-        Column {
-            column_name: "temperature".to_owned(),
-            values: Some(column::Values {
-                f32_values: temp,
-                ..Default::default()
-            }),
-            semantic_type: SemanticType::Field as i32,
-            datatype: ColumnDataType::Float32 as i32,
-            ..Default::default()
-        },
-        // field column: humidity
-        Column {
-            column_name: "humidity".to_owned(),
-            values: Some(column::Values {
-                i32_values: humidity,
-                ..Default::default()
-            }),
-            semantic_type: SemanticType::Field as i32,
-            datatype: ColumnDataType::Int32 as i32,
-            ..Default::default()
-        },
-    ];
-
-    InsertRequest {
-        table_name: "weather_demo".to_owned(),
-        columns,
-        row_count: rows as u32,
-        ..Default::default()
+        }],
     }
 }
