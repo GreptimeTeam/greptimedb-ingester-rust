@@ -15,7 +15,7 @@
 use crate::api::v1::auth_header::AuthScheme;
 use crate::api::v1::greptime_request::Request;
 use crate::api::v1::{
-    greptime_response, AffectedRows, AuthHeader, DeleteRequest, GreptimeRequest, InsertRequest,
+    greptime_response, AffectedRows, AuthHeader, DeleteRequests, GreptimeRequest, InsertRequest,
     InsertRequests, RequestHeader,
 };
 use crate::stream_insert::StreamInserter;
@@ -104,8 +104,8 @@ impl Database {
     }
 
     /// Issue a delete to database
-    pub async fn delete(&self, request: DeleteRequest) -> Result<u32> {
-        self.handle(Request::Delete(request)).await
+    pub async fn delete(&self, request: DeleteRequests) -> Result<u32> {
+        self.handle(Request::Deletes(request)).await
     }
 
     async fn handle(&self, request: Request) -> Result<u32> {
