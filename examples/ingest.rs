@@ -15,6 +15,7 @@
 use derive_new::new;
 
 use greptimedb_client::api::v1::*;
+use greptimedb_client::helpers::values::*;
 use greptimedb_client::{Client, Database, DEFAULT_SCHEMA_NAME};
 
 #[tokio::main]
@@ -102,20 +103,10 @@ fn to_insert_request(records: Vec<WeatherRecord>) -> RowInsertRequests {
         .into_iter()
         .map(|record| Row {
             values: vec![
-                Value {
-                    value_data: Some(value::ValueData::TimestampMillisecondValue(
-                        record.timestamp_millis,
-                    )),
-                },
-                Value {
-                    value_data: Some(value::ValueData::StringValue(record.collector)),
-                },
-                Value {
-                    value_data: Some(value::ValueData::F32Value(record.temperature)),
-                },
-                Value {
-                    value_data: Some(value::ValueData::I32Value(record.humidity)),
-                },
+                timestamp_millisecond_value(record.timestamp_millis),
+                string_value(record.collector),
+                f32_value(record.temperature),
+                i32_value(record.humidity),
             ],
         })
         .collect();

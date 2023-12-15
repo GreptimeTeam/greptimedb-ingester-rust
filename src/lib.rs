@@ -17,6 +17,7 @@ pub mod channel_manager;
 mod client;
 mod database;
 mod error;
+pub mod helpers;
 pub mod load_balance;
 mod stream_insert;
 
