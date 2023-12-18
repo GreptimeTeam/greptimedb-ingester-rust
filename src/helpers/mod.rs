@@ -12,18 +12,4 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod api;
-pub mod channel_manager;
-mod client;
-mod database;
-mod error;
-pub mod helpers;
-pub mod load_balance;
-mod stream_insert;
-
-pub use self::client::Client;
-pub use self::database::Database;
-pub use self::error::{Error, Result};
-pub use self::stream_insert::StreamInserter;
-
-pub const DEFAULT_SCHEMA_NAME: &str = "public";
+pub mod values;
