@@ -15,6 +15,7 @@
 use derive_new::new;
 
 use greptimedb_client::api::v1::*;
+use greptimedb_client::helpers::schema::*;
 use greptimedb_client::helpers::values::*;
 use greptimedb_client::{Client, Database, DEFAULT_SCHEMA_NAME};
 
@@ -61,30 +62,10 @@ fn weather_records() -> Vec<WeatherRecord> {
 
 fn weather_schema() -> Vec<ColumnSchema> {
     vec![
-        ColumnSchema {
-            column_name: "ts".to_owned(),
-            semantic_type: SemanticType::Timestamp as i32,
-            datatype: ColumnDataType::TimestampMillisecond as i32,
-            ..Default::default()
-        },
-        ColumnSchema {
-            column_name: "collector".to_owned(),
-            semantic_type: SemanticType::Tag as i32,
-            datatype: ColumnDataType::String as i32,
-            ..Default::default()
-        },
-        ColumnSchema {
-            column_name: "temperature".to_owned(),
-            semantic_type: SemanticType::Field as i32,
-            datatype: ColumnDataType::Float32 as i32,
-            ..Default::default()
-        },
-        ColumnSchema {
-            column_name: "humidity".to_owned(),
-            semantic_type: SemanticType::Field as i32,
-            datatype: ColumnDataType::Int32 as i32,
-            ..Default::default()
-        },
+        timestamp("ts", ColumnDataType::TimestampMillisecond),
+        tag("collector", ColumnDataType::String),
+        field("temperature", ColumnDataType::Float32),
+        field("humidity", ColumnDataType::Int32),
     ]
 }
 
