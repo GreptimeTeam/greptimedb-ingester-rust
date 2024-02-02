@@ -1,18 +1,11 @@
-# GreptimeDB Rust Client
+# GreptimeDB Rust Ingester
 
-A Rust client for GreptimeDB gRPC protocol.
+A Rust client for ingesting data into GreptimeDB, using GreptimeDB's gRPC
+protocol.
 
-## Status
-
-- [x] gRPC inserts
-- [x] gRPC stream inserts
-- [x] gRPC deletes
-- [ ] Arrow Flight API
-  - [ ] DDL
-  - [ ] SQL query
-  - [ ] PromQL query
-- [ ] Prometheus gateway API
-
+See
+[examples](https://github.com/GreptimeTeam/greptimedb-ingester-rust/blob/master/examples/ingest.rs)
+for latest usage demo.
 
 ## License
 
