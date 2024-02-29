@@ -17,7 +17,9 @@ use derive_new::new;
 use greptimedb_client::api::v1::*;
 use greptimedb_client::helpers::schema::*;
 use greptimedb_client::helpers::values::*;
-use greptimedb_client::{Client, Database, DEFAULT_SCHEMA_NAME};
+use greptimedb_client::{
+    ChannelConfig, ChannelManager, Client, ClientTlsOption, Database, DEFAULT_SCHEMA_NAME,
+};
 
 #[tokio::main]
 async fn main() {
@@ -25,8 +27,20 @@ async fn main() {
         std::env::var("GREPTIMEDB_ENDPOINT").unwrap_or_else(|_| "localhost:4001".to_owned());
     let greptimedb_dbname =
         std::env::var("GREPTIMEDB_DBNAME").unwrap_or_else(|_| DEFAULT_SCHEMA_NAME.to_owned());
+    let greptimedb_secure = std::env::var("GREPTIMEDB_TLS")
+        .map(|s| s == "1")
+        .unwrap_or(false);
 
-    let grpc_client = Client::with_urls(vec![&greptimedb_endpoint]);
+    let grpc_client = if greptimedb_secure {
+        let channel_config = ChannelConfig::default().client_tls_config(ClientTlsOption::default());
+
+        let channel_manager = ChannelManager::with_tls_config(channel_config)
+            .expect("Failed to create channel manager");
+        Client::with_manager_and_urls(channel_manager, vec![&greptimedb_endpoint])
+    } else {
+        Client::with_urls(vec![&greptimedb_endpoint])
+    };
+
     let client = Database::new_with_dbname(greptimedb_dbname, grpc_client);
 
     let records = weather_records();

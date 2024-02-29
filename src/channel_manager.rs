@@ -70,20 +70,23 @@ impl ChannelManager {
             msg: "no config input",
         })?;
 
-        let server_root_ca_cert = std::fs::read_to_string(path_config.server_ca_cert_path)
-            .context(InvalidConfigFilePathSnafu)?;
-        let server_root_ca_cert = Certificate::from_pem(server_root_ca_cert);
-        let client_cert = std::fs::read_to_string(path_config.client_cert_path)
-            .context(InvalidConfigFilePathSnafu)?;
-        let client_key = std::fs::read_to_string(path_config.client_key_path)
-            .context(InvalidConfigFilePathSnafu)?;
-        let client_identity = Identity::from_pem(client_cert, client_key);
+        let mut client_tls_config = ClientTlsConfig::new();
+        if let Some(server_ca_cert_path) = path_config.server_ca_cert_path {
+            let ca_cert = Certificate::from_pem(
+                std::fs::read_to_string(server_ca_cert_path).context(InvalidConfigFilePathSnafu)?,
+            );
+            client_tls_config = client_tls_config.ca_certificate(ca_cert);
+        }
 
-        cm.client_tls_config = Some(
-            ClientTlsConfig::new()
-                .ca_certificate(server_root_ca_cert)
-                .identity(client_identity),
-        );
+        if let (Some(cert), Some(key)) = (path_config.client_cert_path, path_config.client_key_path)
+        {
+            let client_cert = std::fs::read_to_string(cert).context(InvalidConfigFilePathSnafu)?;
+            let client_key = std::fs::read_to_string(key).context(InvalidConfigFilePathSnafu)?;
+            let client_identity = Identity::from_pem(client_cert, client_key);
+            client_tls_config = client_tls_config.identity(client_identity);
+        }
+
+        cm.client_tls_config = Some(client_tls_config);
 
         Ok(cm)
     }
@@ -152,7 +155,13 @@ impl ChannelManager {
     }
 
     fn build_endpoint(&self, addr: &str) -> Result<Endpoint> {
-        let mut endpoint = Endpoint::new(format!("http://{addr}")).context(CreateChannelSnafu)?;
+        let scheme = if self.client_tls_config.is_some() {
+            "https"
+        } else {
+            "http"
+        };
+        let mut endpoint =
+            Endpoint::new(format!("{scheme}://{addr}")).context(CreateChannelSnafu)?;
 
         if let Some(dur) = self.config.timeout {
             endpoint = endpoint.timeout(dur);
@@ -198,11 +207,14 @@ impl ChannelManager {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ClientTlsOption {
-    pub server_ca_cert_path: PathBuf,
-    pub client_cert_path: PathBuf,
-    pub client_key_path: PathBuf,
+    /// Path to server CA file, use system CA when not configured
+    pub server_ca_cert_path: Option<PathBuf>,
+    /// the file path to client certificate
+    pub client_cert_path: Option<PathBuf>,
+    /// the file path to client private key
+    pub client_key_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -523,9 +535,9 @@ mod tests {
             .tcp_keepalive(Duration::from_secs(2))
             .tcp_nodelay(false)
             .client_tls_config(ClientTlsOption {
-                server_ca_cert_path: "some_server_path".into(),
-                client_cert_path: "some_cert_path".into(),
-                client_key_path: "some_key_path".into(),
+                server_ca_cert_path: Some("some_server_path".into()),
+                client_cert_path: Some("some_cert_path".into()),
+                client_key_path: Some("some_key_path".into()),
             });
 
         assert_eq!(
@@ -543,9 +555,9 @@ mod tests {
                 tcp_keepalive: Some(Duration::from_secs(2)),
                 tcp_nodelay: false,
                 client_tls: Some(ClientTlsOption {
-                    server_ca_cert_path: "some_server_path".into(),
-                    client_cert_path: "some_cert_path".into(),
-                    client_key_path: "some_key_path".into(),
+                    server_ca_cert_path: Some("some_server_path".into()),
+                    client_cert_path: Some("some_cert_path".into()),
+                    client_key_path: Some("some_key_path".into()),
                 }),
             },
             cfg

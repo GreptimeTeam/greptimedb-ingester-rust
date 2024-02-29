@@ -19,7 +19,7 @@ rand = "0.8"
 snafu = "0.7"
 tokio = { version = "1", features = ["rt", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
-tonic = { version = "0.10", features = ["tls"] }
+tonic = { version = "0.10", features = ["tls", "tls-roots"] }
 tower = "0.4"
 
 [build-dependencies]
