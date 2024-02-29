@@ -535,9 +535,9 @@ mod tests {
             .tcp_keepalive(Duration::from_secs(2))
             .tcp_nodelay(false)
             .client_tls_config(ClientTlsOption {
-                server_ca_cert_path: "some_server_path".into(),
-                client_cert_path: "some_cert_path".into(),
-                client_key_path: "some_key_path".into(),
+                server_ca_cert_path: Some("some_server_path".into()),
+                client_cert_path: Some("some_cert_path".into()),
+                client_key_path: Some("some_key_path".into()),
             });
 
         assert_eq!(
@@ -555,9 +555,9 @@ mod tests {
                 tcp_keepalive: Some(Duration::from_secs(2)),
                 tcp_nodelay: false,
                 client_tls: Some(ClientTlsOption {
-                    server_ca_cert_path: "some_server_path".into(),
-                    client_cert_path: "some_cert_path".into(),
-                    client_key_path: "some_key_path".into(),
+                    server_ca_cert_path: Some("some_server_path".into()),
+                    client_cert_path: Some("some_cert_path".into()),
+                    client_key_path: Some("some_key_path".into()),
                 }),
             },
             cfg
