@@ -170,6 +170,5 @@ fn to_insert_request(records: Vec<WeatherRecord>) -> InsertRequest {
         table_name: "weather_demo".to_owned(),
         columns,
         row_count: rows as u32,
-        ..Default::default()
     }
 }
