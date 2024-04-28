@@ -1,5 +1,5 @@
 name: Release
-run-name: publish packages by @${{ github.actor }}
+run-name: Publish packages by @${{ github.actor }}
 
 on:
   push:
@@ -8,12 +8,7 @@ on:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-      - name: Set up Rust
-        uses: hecrj/setup-rust-action@v1
-      - uses: actions/checkout@v2
-      - name: Publish
-        shell: bash
-        run: |
-          cargo publish --token ${{ secrets.CRATES_TOKEN }}
+      - uses: actions/checkout@v4
+      - run: cargo publish --token ${{ secrets.CRATES_TOKEN }}
