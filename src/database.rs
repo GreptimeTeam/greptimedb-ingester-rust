@@ -1,4 +1,4 @@
-// Copyright 2024 Greptime Team
+// Copyright 2023 Greptime Team
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -78,7 +78,7 @@ impl Database {
             .await
     }
 
-    /// Write Row based insert reuqests to GreptimeDB and get rows written
+    /// Write Row based insert requests to GreptimeDB and get rows written
     pub async fn row_insert(&self, requests: RowInsertRequests) -> Result<u32> {
         self.handle(Request::RowInserts(requests)).await
     }
