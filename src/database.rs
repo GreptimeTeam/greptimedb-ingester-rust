@@ -78,7 +78,7 @@ impl Database {
             .await
     }
 
-    /// Write Row based insert reuqests to GreptimeDB and get rows written
+    /// Write Row based insert requests to GreptimeDB and get rows written
     pub async fn row_insert(&self, requests: RowInsertRequests) -> Result<u32> {
         self.handle(Request::RowInserts(requests)).await
     }
