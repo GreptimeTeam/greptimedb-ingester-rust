@@ -14,10 +14,10 @@
 
 use derive_new::new;
 
-use greptimedb_client::api::v1::*;
-use greptimedb_client::helpers::schema::*;
-use greptimedb_client::helpers::values::*;
-use greptimedb_client::{
+use greptimedb_ingester::api::v1::*;
+use greptimedb_ingester::helpers::schema::*;
+use greptimedb_ingester::helpers::values::*;
+use greptimedb_ingester::{
     ChannelConfig, ChannelManager, Client, ClientTlsOption, Database, DEFAULT_SCHEMA_NAME,
 };
 
