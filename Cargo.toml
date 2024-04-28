@@ -5,8 +5,6 @@ edition = "2021"
 license = "Apache-2.0"
 description = "A rust client for GreptimeDB gRPC protocol"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 dashmap = "5.4"
 enum_dispatch = "0.3"

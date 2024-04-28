@@ -1,4 +1,4 @@
-// Copyright 2024 Greptime Team
+// Copyright 2023 Greptime Team
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -170,6 +170,5 @@ fn to_insert_request(records: Vec<WeatherRecord>) -> InsertRequest {
         table_name: "weather_demo".to_owned(),
         columns,
         row_count: rows as u32,
-        ..Default::default()
     }
 }
