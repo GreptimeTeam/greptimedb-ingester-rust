@@ -14,8 +14,8 @@
 
 use derive_new::new;
 
-use greptimedb_client::api::v1::*;
-use greptimedb_client::{Client, Database, DEFAULT_SCHEMA_NAME};
+use greptimedb_ingester::api::v1::*;
+use greptimedb_ingester::{Client, Database, DEFAULT_SCHEMA_NAME};
 
 #[tokio::main]
 async fn main() {
