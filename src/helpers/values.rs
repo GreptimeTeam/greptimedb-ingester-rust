@@ -67,12 +67,8 @@ define_value_fn!(time_second_value, i64, TimeSecondValue);
 define_value_fn!(time_millisecond_value, i64, TimeMillisecondValue);
 define_value_fn!(time_microsecond_value, i64, TimeMicrosecondValue);
 define_value_fn!(time_nanosecond_value, i64, TimeNanosecondValue);
-define_value_fn!(interval_year_month_value, i32, IntervalYearMonthValues);
-define_value_fn!(interval_day_time_value, i64, IntervalDayTimeValues);
-define_value_fn!(duration_second_value, i64, DurationSecondValue);
-define_value_fn!(duration_millisecond_value, i64, DurationMillisecondValue);
-define_value_fn!(duration_microsecond_value, i64, DurationMicrosecondValue);
-define_value_fn!(duration_nanosecond_value, i64, DurationNanosecondValue);
+define_value_fn!(interval_year_month_value, i32, IntervalYearMonthValue);
+define_value_fn!(interval_day_time_value, i64, IntervalDayTimeValue);
 
 #[inline]
 pub fn interval_month_day_nano_value(
@@ -81,13 +77,13 @@ pub fn interval_month_day_nano_value(
     nanoseconds: i64,
 ) -> crate::api::v1::Value {
     crate::api::v1::Value {
-        value_data: Some(
-            crate::api::v1::value::ValueData::IntervalMonthDayNanoValues(IntervalMonthDayNano {
+        value_data: Some(crate::api::v1::value::ValueData::IntervalMonthDayNanoValue(
+            IntervalMonthDayNano {
                 months,
                 days,
                 nanoseconds,
-            }),
-        ),
+            },
+        )),
     }
 }
 
