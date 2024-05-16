@@ -119,8 +119,8 @@ impl Database {
         let client = self.client.make_database_client()?.inner;
         let request = self.to_rpc_request(request);
         let response = client
-            .send_compressed(CompressionEncoding::Gzip)
-            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Zstd)
+            .accept_compressed(CompressionEncoding::Zstd)
             .handle(request)
             .await?
             .into_inner()
