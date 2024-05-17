@@ -20,6 +20,7 @@ use crate::api::v1::HealthCheckRequest;
 use crate::channel_manager::ChannelManager;
 use parking_lot::RwLock;
 use snafu::OptionExt;
+use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 
 use crate::load_balance::{LoadBalance, Loadbalancer};
@@ -36,22 +37,74 @@ pub struct Client {
     inner: Arc<Inner>,
 }
 
+#[derive(Default)]
+pub struct ClientBuilder {
+    channel_manager: ChannelManager,
+    load_balance: Loadbalancer,
+    compression: Compression,
+    peers: Vec<String>,
+}
+
+impl ClientBuilder {
+    pub fn channel_manager(mut self, channel_manager: ChannelManager) -> Self {
+        self.channel_manager = channel_manager;
+        self
+    }
+
+    pub fn load_balance(mut self, load_balance: Loadbalancer) -> Self {
+        self.load_balance = load_balance;
+        self
+    }
+
+    pub fn compression(mut self, compression: Compression) -> Self {
+        self.compression = compression;
+        self
+    }
+
+    pub fn peers<U, A>(mut self, peers: A) -> Self
+    where
+        U: AsRef<str>,
+        A: AsRef<[U]>,
+    {
+        self.peers = normailze_urls(peers);
+        self
+    }
+
+    pub fn build(self) -> Client {
+        let inner = InnerBuilder::default()
+            .channel_manager(self.channel_manager)
+            .load_balance(self.load_balance)
+            .compression(self.compression)
+            .peers(self.peers)
+            .build();
+        Client {
+            inner: Arc::new(inner),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Compression {
+    Gzip,
+    Zstd,
+    Plain,
+}
+
+impl Default for Compression {
+    fn default() -> Self {
+        Self::Gzip
+    }
+}
+
 #[derive(Debug, Default)]
 struct Inner {
     channel_manager: ChannelManager,
     peers: Arc<RwLock<Vec<String>>>,
     load_balance: Loadbalancer,
+    compression: Compression,
 }
 
 impl Inner {
-    fn with_manager(channel_manager: ChannelManager) -> Self {
-        Self {
-            channel_manager,
-            peers: Default::default(),
-            load_balance: Default::default(),
-        }
-    }
-
     fn set_peers(&self, peers: Vec<String>) {
         let mut guard = self.peers.write();
         *guard = peers;
@@ -63,51 +116,93 @@ impl Inner {
     }
 }
 
+#[derive(Default)]
+pub struct InnerBuilder {
+    channel_manager: ChannelManager,
+    load_balance: Loadbalancer,
+    compression: Compression,
+    peers: Arc<RwLock<Vec<String>>>,
+}
+
+impl InnerBuilder {
+    pub(self) fn channel_manager(mut self, channel_manager: ChannelManager) -> Self {
+        self.channel_manager = channel_manager;
+        self
+    }
+
+    pub(self) fn load_balance(mut self, load_balance: Loadbalancer) -> Self {
+        self.load_balance = load_balance;
+        self
+    }
+
+    pub(self) fn compression(mut self, compression: Compression) -> Self {
+        self.compression = compression;
+        self
+    }
+
+    pub(self) fn peers(mut self, peers: Vec<String>) -> Self {
+        self.peers = Arc::new(RwLock::new(peers));
+        self
+    }
+
+    pub(self) fn build(self) -> Inner {
+        Inner {
+            channel_manager: self.channel_manager,
+            load_balance: self.load_balance,
+            compression: self.compression,
+            peers: self.peers,
+        }
+    }
+}
+
 impl Client {
+    #[deprecated(since = "0.1.0", note = "use `ClientBuilder` instead of this method")]
     pub fn new() -> Self {
         Default::default()
     }
 
+    #[deprecated(since = "0.1.0", note = "use `ClientBuilder` instead of this method")]
     pub fn with_manager(channel_manager: ChannelManager) -> Self {
-        let inner = Arc::new(Inner::with_manager(channel_manager));
-        Self { inner }
-    }
-
-    pub fn with_urls<U, A>(urls: A) -> Self
-    where
-        U: AsRef<str>,
-        A: AsRef<[U]>,
-    {
-        Self::with_manager_and_urls(ChannelManager::new(), urls)
-    }
-
-    pub fn with_manager_and_urls<U, A>(channel_manager: ChannelManager, urls: A) -> Self
-    where
-        U: AsRef<str>,
-        A: AsRef<[U]>,
-    {
-        let inner = Inner::with_manager(channel_manager);
-        let urls: Vec<String> = urls
-            .as_ref()
-            .iter()
-            .map(|peer| peer.as_ref().to_string())
-            .collect();
-        inner.set_peers(urls);
+        let inner = InnerBuilder::default()
+            .channel_manager(channel_manager)
+            .build();
         Self {
             inner: Arc::new(inner),
         }
     }
 
+    #[deprecated(since = "0.1.0", note = "use `ClientBuilder` instead of this method")]
+    pub fn with_urls<U, A>(urls: A) -> Self
+    where
+        U: AsRef<str>,
+        A: AsRef<[U]>,
+    {
+        ClientBuilder::default().peers(urls).build()
+    }
+
+    #[deprecated(since = "0.1.0", note = "use `ClientBuilder` instead of this method")]
+    pub fn with_manager_and_urls<U, A>(channel_manager: ChannelManager, urls: A) -> Self
+    where
+        U: AsRef<str>,
+        A: AsRef<[U]>,
+    {
+        let inner = InnerBuilder::default()
+            .channel_manager(channel_manager)
+            .peers(normailze_urls(urls))
+            .build();
+
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+
+    #[deprecated(since = "0.1.0", note = "should be removed in the future")]
     pub fn start<U, A>(&self, urls: A)
     where
         U: AsRef<str>,
         A: AsRef<[U]>,
     {
-        let urls: Vec<String> = urls
-            .as_ref()
-            .iter()
-            .map(|peer| peer.as_ref().to_string())
-            .collect();
+        let urls: Vec<String> = normailze_urls(urls);
 
         self.inner.set_peers(urls);
     }
@@ -127,8 +222,19 @@ impl Client {
 
     pub(crate) fn make_database_client(&self) -> Result<DatabaseClient> {
         let (_, channel) = self.find_channel()?;
-        let client =
-            GreptimeDatabaseClient::new(channel).max_decoding_message_size(MAX_MESSAGE_SIZE);
+        let mut client = GreptimeDatabaseClient::new(channel)
+            .max_decoding_message_size(MAX_MESSAGE_SIZE)
+            .accept_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Zstd);
+        match self.inner.compression {
+            Compression::Gzip => {
+                client = client.send_compressed(CompressionEncoding::Gzip);
+            }
+            Compression::Zstd => {
+                client = client.send_compressed(CompressionEncoding::Zstd);
+            }
+            Compression::Plain => {}
+        }
         Ok(DatabaseClient { inner: client })
     }
 
@@ -138,6 +244,17 @@ impl Client {
         client.health_check(HealthCheckRequest {}).await?;
         Ok(())
     }
+}
+
+fn normailze_urls<U, A>(urls: A) -> Vec<String>
+where
+    U: AsRef<str>,
+    A: AsRef<[U]>,
+{
+    urls.as_ref()
+        .iter()
+        .map(|peer| peer.as_ref().to_string())
+        .collect()
 }
 
 #[cfg(test)]

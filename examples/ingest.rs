@@ -18,7 +18,7 @@ use greptimedb_ingester::api::v1::*;
 use greptimedb_ingester::helpers::schema::*;
 use greptimedb_ingester::helpers::values::*;
 use greptimedb_ingester::{
-    ChannelConfig, ChannelManager, Client, ClientTlsOption, Database, DEFAULT_SCHEMA_NAME,
+    ChannelConfig, ChannelManager, ClientBuilder, ClientTlsOption, Database, DEFAULT_SCHEMA_NAME,
 };
 
 #[tokio::main]
@@ -31,14 +31,17 @@ async fn main() {
         .map(|s| s == "1")
         .unwrap_or(false);
 
+    let builder = ClientBuilder::default()
+        .peers(vec![&greptimedb_endpoint])
+        .compression(greptimedb_ingester::Compression::Gzip);
     let grpc_client = if greptimedb_secure {
         let channel_config = ChannelConfig::default().client_tls_config(ClientTlsOption::default());
 
         let channel_manager = ChannelManager::with_tls_config(channel_config)
             .expect("Failed to create channel manager");
-        Client::with_manager_and_urls(channel_manager, vec![&greptimedb_endpoint])
+        builder.channel_manager(channel_manager).build()
     } else {
-        Client::with_urls(vec![&greptimedb_endpoint])
+        builder.build()
     };
 
     let client = Database::new_with_dbname(greptimedb_dbname, grpc_client);

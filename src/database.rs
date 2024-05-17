@@ -21,7 +21,6 @@ use crate::api::v1::{
 use crate::stream_insert::StreamInserter;
 
 use snafu::OptionExt;
-use tonic::codec::CompressionEncoding;
 
 use crate::error::IllegalDatabaseResponseSnafu;
 use crate::{Client, Result};
@@ -116,11 +115,9 @@ impl Database {
     }
 
     async fn handle(&self, request: Request) -> Result<u32> {
-        let client = self.client.make_database_client()?.inner;
+        let mut client = self.client.make_database_client()?.inner;
         let request = self.to_rpc_request(request);
         let response = client
-            .send_compressed(CompressionEncoding::Zstd)
-            .accept_compressed(CompressionEncoding::Zstd)
             .handle(request)
             .await?
             .into_inner()

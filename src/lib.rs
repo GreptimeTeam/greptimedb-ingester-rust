@@ -22,7 +22,7 @@ pub mod load_balance;
 mod stream_insert;
 
 pub use self::channel_manager::{ChannelConfig, ChannelManager, ClientTlsOption};
-pub use self::client::Client;
+pub use self::client::{Client, ClientBuilder, Compression};
 pub use self::database::Database;
 pub use self::error::{Error, Result};
 pub use self::stream_insert::StreamInserter;
