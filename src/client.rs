@@ -25,6 +25,7 @@ use tonic::transport::Channel;
 
 use crate::load_balance::{LoadBalance, Loadbalancer};
 use crate::{error, Result};
+use derive_builder::Builder;
 
 const MAX_MESSAGE_SIZE: usize = 512 * 1024 * 1024;
 
@@ -66,7 +67,7 @@ impl ClientBuilder {
         U: AsRef<str>,
         A: AsRef<[U]>,
     {
-        self.peers = normailze_urls(peers);
+        self.peers = normalize_urls(peers);
         self
     }
 
@@ -76,7 +77,8 @@ impl ClientBuilder {
             .load_balance(self.load_balance)
             .compression(self.compression)
             .peers(self.peers)
-            .build();
+            .build()
+            .unwrap();
         Client {
             inner: Arc::new(inner),
         }
@@ -87,7 +89,7 @@ impl ClientBuilder {
 pub enum Compression {
     Gzip,
     Zstd,
-    Plain,
+    None,
 }
 
 impl Default for Compression {
@@ -96,12 +98,20 @@ impl Default for Compression {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Builder)]
 struct Inner {
     channel_manager: ChannelManager,
+    #[builder(setter(custom))]
     peers: Arc<RwLock<Vec<String>>>,
     load_balance: Loadbalancer,
     compression: Compression,
+}
+
+impl InnerBuilder {
+    pub fn peers(&mut self, peers: Vec<String>) -> &mut Self {
+        self.peers = Some(Arc::new(RwLock::new(peers)));
+        self
+    }
 }
 
 impl Inner {
@@ -116,45 +126,6 @@ impl Inner {
     }
 }
 
-#[derive(Default)]
-pub struct InnerBuilder {
-    channel_manager: ChannelManager,
-    load_balance: Loadbalancer,
-    compression: Compression,
-    peers: Arc<RwLock<Vec<String>>>,
-}
-
-impl InnerBuilder {
-    pub(self) fn channel_manager(mut self, channel_manager: ChannelManager) -> Self {
-        self.channel_manager = channel_manager;
-        self
-    }
-
-    pub(self) fn load_balance(mut self, load_balance: Loadbalancer) -> Self {
-        self.load_balance = load_balance;
-        self
-    }
-
-    pub(self) fn compression(mut self, compression: Compression) -> Self {
-        self.compression = compression;
-        self
-    }
-
-    pub(self) fn peers(mut self, peers: Vec<String>) -> Self {
-        self.peers = Arc::new(RwLock::new(peers));
-        self
-    }
-
-    pub(self) fn build(self) -> Inner {
-        Inner {
-            channel_manager: self.channel_manager,
-            load_balance: self.load_balance,
-            compression: self.compression,
-            peers: self.peers,
-        }
-    }
-}
-
 impl Client {
     #[deprecated(since = "0.1.0", note = "use `ClientBuilder` instead of this method")]
     pub fn new() -> Self {
@@ -165,7 +136,8 @@ impl Client {
     pub fn with_manager(channel_manager: ChannelManager) -> Self {
         let inner = InnerBuilder::default()
             .channel_manager(channel_manager)
-            .build();
+            .build()
+            .unwrap();
         Self {
             inner: Arc::new(inner),
         }
@@ -188,21 +160,22 @@ impl Client {
     {
         let inner = InnerBuilder::default()
             .channel_manager(channel_manager)
-            .peers(normailze_urls(urls))
-            .build();
+            .peers(normalize_urls(urls))
+            .build()
+            .unwrap();
 
         Self {
             inner: Arc::new(inner),
         }
     }
 
-    #[deprecated(since = "0.1.0", note = "should be removed in the future")]
+    #[deprecated(since = "0.1.0", note = "use `ClientBuilder` instead of this method")]
     pub fn start<U, A>(&self, urls: A)
     where
         U: AsRef<str>,
         A: AsRef<[U]>,
     {
-        let urls: Vec<String> = normailze_urls(urls);
+        let urls: Vec<String> = normalize_urls(urls);
 
         self.inner.set_peers(urls);
     }
@@ -233,7 +206,7 @@ impl Client {
             Compression::Zstd => {
                 client = client.send_compressed(CompressionEncoding::Zstd);
             }
-            Compression::Plain => {}
+            Compression::None => {}
         }
         Ok(DatabaseClient { inner: client })
     }
@@ -246,7 +219,7 @@ impl Client {
     }
 }
 
-fn normailze_urls<U, A>(urls: A) -> Vec<String>
+fn normalize_urls<U, A>(urls: A) -> Vec<String>
 where
     U: AsRef<str>,
     A: AsRef<[U]>,
