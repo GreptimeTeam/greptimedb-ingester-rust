@@ -85,17 +85,12 @@ impl ClientBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum Compression {
+    #[default]
     Gzip,
     Zstd,
     None,
-}
-
-impl Default for Compression {
-    fn default() -> Self {
-        Self::Gzip
-    }
 }
 
 #[derive(Debug, Default, Builder)]
