@@ -15,7 +15,7 @@
 use derive_new::new;
 
 use greptimedb_ingester::api::v1::*;
-use greptimedb_ingester::{Client, Database, DEFAULT_SCHEMA_NAME};
+use greptimedb_ingester::{ClientBuilder, Database, DEFAULT_SCHEMA_NAME};
 
 #[tokio::main]
 async fn main() {
@@ -25,7 +25,9 @@ async fn main() {
     let greptimedb_dbname =
         std::env::var("GREPTIMEDB_DBNAME").unwrap_or_else(|_| DEFAULT_SCHEMA_NAME.to_owned());
 
-    let grpc_client = Client::with_urls(vec![&greptimedb_endpoint]);
+    let grpc_client = ClientBuilder::default()
+        .peers(vec![&greptimedb_endpoint])
+        .build();
 
     let client = Database::new_with_dbname(greptimedb_dbname, grpc_client);
 

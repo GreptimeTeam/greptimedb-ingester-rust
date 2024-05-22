@@ -21,7 +21,7 @@ pub trait LoadBalance {
 }
 
 #[enum_dispatch(LoadBalance)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Loadbalancer {
     Random,
 }
@@ -32,7 +32,7 @@ impl Default for Loadbalancer {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct Random;
 
 impl LoadBalance for Random {
