@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use greptime_proto::v1::greptime_request::Request;
-use greptime_proto::v1::{greptime_database_client::GreptimeDatabaseClient, InsertRequest};
+use greptime_proto::v1::{
+    greptime_database_client::GreptimeDatabaseClient, InsertRequest, RowInsertRequests,
+};
 use greptime_proto::v1::{
     greptime_response, AffectedRows, AuthHeader, GreptimeRequest, GreptimeResponse, InsertRequests,
     RequestHeader,
@@ -74,9 +76,22 @@ impl StreamInserter {
         }
     }
 
+    #[deprecated(note = "Use row_insert instead.")]
     pub async fn insert(&self, requests: Vec<InsertRequest>) -> Result<()> {
         let inserts = InsertRequests { inserts: requests };
         let request = self.to_rpc_request(Request::Inserts(inserts));
+
+        self.sender.send(request).await.map_err(|e| {
+            error::ClientStreamingSnafu {
+                err_msg: e.to_string(),
+            }
+            .build()
+        })
+    }
+
+    /// Write Row based insert requests to GreptimeDB with streaming
+    pub async fn row_insert(&self, requests: RowInsertRequests) -> Result<()> {
+        let request = self.to_rpc_request(Request::RowInserts(requests));
 
         self.sender.send(request).await.map_err(|e| {
             error::ClientStreamingSnafu {
