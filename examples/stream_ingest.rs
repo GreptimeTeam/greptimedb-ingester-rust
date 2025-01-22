@@ -15,6 +15,10 @@
 use derive_new::new;
 
 use greptimedb_ingester::api::v1::*;
+use greptimedb_ingester::helpers::schema::{field, tag, timestamp};
+use greptimedb_ingester::helpers::values::{
+    f32_value, i32_value, string_value, timestamp_millisecond_value,
+};
 use greptimedb_ingester::{ClientBuilder, Database, DEFAULT_SCHEMA_NAME};
 
 #[tokio::main]
@@ -31,17 +35,17 @@ async fn main() {
 
     let client = Database::new_with_dbname(greptimedb_dbname, grpc_client);
 
-    let stream_inserter = client.streaming_inserter().unwrap();
+    let stream_inserter = client.streaming_inserter(1024, Some("ttl=7d")).unwrap();
 
     if let Err(e) = stream_inserter
-        .insert(vec![to_insert_request(weather_records_1())])
+        .row_insert(to_insert_requests(weather_records_1()))
         .await
     {
         eprintln!("Error: {e}");
     }
 
     if let Err(e) = stream_inserter
-        .insert(vec![to_insert_request(weather_records_2())])
+        .row_insert(to_insert_requests(weather_records_2()))
         .await
     {
         eprintln!("Error: {e}");
@@ -89,6 +93,15 @@ fn weather_records_2() -> Vec<WeatherRecord> {
     ]
 }
 
+fn weather_schema() -> Vec<ColumnSchema> {
+    vec![
+        timestamp("ts", ColumnDataType::TimestampMillisecond),
+        tag("collector", ColumnDataType::String),
+        field("temperature", ColumnDataType::Float32),
+        field("humidity", ColumnDataType::Int32),
+    ]
+}
+
 /// This function generates some random data and bundle them into a
 /// `InsertRequest`.
 ///
@@ -99,78 +112,26 @@ fn weather_records_2() -> Vec<WeatherRecord> {
 /// - `temperature`: a value field of f32
 /// - `humidity`: a value field of i32
 ///
-fn to_insert_request(records: Vec<WeatherRecord>) -> InsertRequest {
-    // convert records into columns
-    let rows = records.len();
+fn to_insert_requests(records: Vec<WeatherRecord>) -> RowInsertRequests {
+    let rows = records
+        .into_iter()
+        .map(|record| Row {
+            values: vec![
+                timestamp_millisecond_value(record.timestamp_millis),
+                string_value(record.collector),
+                f32_value(record.temperature),
+                i32_value(record.humidity),
+            ],
+        })
+        .collect();
 
-    // transpose records into columns
-    let (timestamp_millis, collectors, temp, humidity) = records.into_iter().fold(
-        (
-            Vec::with_capacity(rows),
-            Vec::with_capacity(rows),
-            Vec::with_capacity(rows),
-            Vec::with_capacity(rows),
-        ),
-        |mut acc, rec| {
-            acc.0.push(rec.timestamp_millis);
-            acc.1.push(rec.collector);
-            acc.2.push(rec.temperature);
-            acc.3.push(rec.humidity);
-
-            acc
-        },
-    );
-
-    let columns = vec![
-        // timestamp column: `ts`
-        Column {
-            column_name: "ts".to_owned(),
-            values: Some(column::Values {
-                timestamp_millisecond_values: timestamp_millis,
-                ..Default::default()
+    RowInsertRequests {
+        inserts: vec![RowInsertRequest {
+            table_name: "weather_demo".to_owned(),
+            rows: Some(Rows {
+                schema: weather_schema(),
+                rows,
             }),
-            semantic_type: SemanticType::Timestamp as i32,
-            datatype: ColumnDataType::TimestampMillisecond as i32,
-            ..Default::default()
-        },
-        // tag column: collectors
-        Column {
-            column_name: "collector".to_owned(),
-            values: Some(column::Values {
-                string_values: collectors.into_iter().collect(),
-                ..Default::default()
-            }),
-            semantic_type: SemanticType::Tag as i32,
-            datatype: ColumnDataType::String as i32,
-            ..Default::default()
-        },
-        // field column: temperature
-        Column {
-            column_name: "temperature".to_owned(),
-            values: Some(column::Values {
-                f32_values: temp,
-                ..Default::default()
-            }),
-            semantic_type: SemanticType::Field as i32,
-            datatype: ColumnDataType::Float32 as i32,
-            ..Default::default()
-        },
-        // field column: humidity
-        Column {
-            column_name: "humidity".to_owned(),
-            values: Some(column::Values {
-                i32_values: humidity,
-                ..Default::default()
-            }),
-            semantic_type: SemanticType::Field as i32,
-            datatype: ColumnDataType::Int32 as i32,
-            ..Default::default()
-        },
-    ];
-
-    InsertRequest {
-        table_name: "weather_demo".to_owned(),
-        columns,
-        row_count: rows as u32,
+        }],
     }
 }

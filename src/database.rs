@@ -20,10 +20,10 @@ use crate::api::v1::{
 };
 use crate::stream_insert::StreamInserter;
 
-use snafu::OptionExt;
-
-use crate::error::IllegalDatabaseResponseSnafu;
+use crate::error::{IllegalDatabaseResponseSnafu, InvalidAsciiSnafu};
 use crate::{Client, Result};
+use snafu::OptionExt;
+use tonic::metadata::MetadataValue;
 
 const DEFAULT_STREAMING_INSERTER_BUFFER_SIZE: usize = 1024;
 
@@ -45,7 +45,7 @@ impl Database {
     ///
     /// - the name of database when using GreptimeDB standalone or cluster
     /// - the name provided by GreptimeCloud or other multi-tenant GreptimeDB
-    /// environment
+    ///   environment
     pub fn new_with_dbname(dbname: impl Into<String>, client: Client) -> Self {
         Self {
             dbname: dbname.into(),
@@ -74,49 +74,69 @@ impl Database {
     /// Write insert requests to GreptimeDB and get rows written
     #[deprecated(note = "Use row_insert instead.")]
     pub async fn insert(&self, requests: Vec<InsertRequest>) -> Result<u32> {
-        self.handle(Request::Inserts(InsertRequests { inserts: requests }))
+        self.handle(Request::Inserts(InsertRequests { inserts: requests }), None)
             .await
     }
 
     /// Write Row based insert requests to GreptimeDB and get rows written
     pub async fn row_insert(&self, requests: RowInsertRequests) -> Result<u32> {
-        self.handle(Request::RowInserts(requests)).await
+        self.handle(Request::RowInserts(requests), None).await
+    }
+
+    /// Write Row based insert requests with hint to GreptimeDB and get rows written
+    pub async fn row_insert_with_hint(
+        &self,
+        requests: RowInsertRequests,
+        hint: &str,
+    ) -> Result<u32> {
+        self.handle(Request::RowInserts(requests), Some(hint)).await
     }
 
     /// Initialise a streaming insert handle, using default buffer size `1024`
-    pub fn streaming_inserter(&self) -> Result<StreamInserter> {
-        self.streaming_inserter_with_channel_size(DEFAULT_STREAMING_INSERTER_BUFFER_SIZE)
+    pub fn default_streaming_inserter(&self) -> Result<StreamInserter> {
+        self.streaming_inserter(DEFAULT_STREAMING_INSERTER_BUFFER_SIZE, None)
     }
 
-    /// Initialise a stream insert handle using custom buffer size
-    ///
-    /// The stream insert mechanism uses gRPC client streaming to reduce latency
-    /// for each write. It is recommended if you have a batch of inserts and do
-    /// not need intermediate results.
-    pub fn streaming_inserter_with_channel_size(
+    /// Initialise a streaming insert handle, using custom buffer size and hint
+    pub fn streaming_inserter(
         &self,
         channel_size: usize,
+        hint: Option<&str>,
     ) -> Result<StreamInserter> {
         let client = self.client.make_database_client()?.inner;
+        let hint = hint
+            .map(|value| {
+                MetadataValue::try_from(value).map_err(|_| InvalidAsciiSnafu { value }.build())
+            })
+            .transpose()?;
 
-        let stream_inserter = StreamInserter::new(
+        StreamInserter::new(
             client,
             self.dbname().to_string(),
             self.auth_header.clone(),
             channel_size,
-        );
-
-        Ok(stream_inserter)
+            hint,
+        )
     }
 
     /// Issue a delete to database
     pub async fn delete(&self, request: DeleteRequests) -> Result<u32> {
-        self.handle(Request::Deletes(request)).await
+        self.handle(Request::Deletes(request), None).await
     }
 
-    async fn handle(&self, request: Request) -> Result<u32> {
+    async fn handle(&self, request: Request, hint: Option<&str>) -> Result<u32> {
         let mut client = self.client.make_database_client()?.inner;
         let request = self.to_rpc_request(request);
+        let mut request = tonic::Request::new(request);
+        if let Some(hint) = hint {
+            let hint = MetadataValue::try_from(hint).map_err(|_| {
+                InvalidAsciiSnafu {
+                    value: hint.to_string(),
+                }
+                .build()
+            })?;
+            request.metadata_mut().insert("x-greptime-hints", hint);
+        }
         let response = client
             .handle(request)
             .await?
