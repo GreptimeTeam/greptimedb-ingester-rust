@@ -35,7 +35,7 @@ async fn main() {
 
     let client = Database::new_with_dbname(greptimedb_dbname, grpc_client);
 
-    let stream_inserter = client.streaming_inserter().unwrap();
+    let stream_inserter = client.streaming_inserter(1024, Some("ttl=7d")).unwrap();
 
     if let Err(e) = stream_inserter
         .row_insert(to_insert_requests(weather_records_1()))

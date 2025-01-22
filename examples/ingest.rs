@@ -47,7 +47,9 @@ async fn main() {
     let client = Database::new_with_dbname(greptimedb_dbname, grpc_client);
 
     let records = weather_records();
-    let result = client.row_insert(to_insert_requests(records)).await;
+    let result = client
+        .row_insert_with_hint(to_insert_requests(records), "ttl=1d")
+        .await;
     match result {
         Ok(rows) => {
             println!("Rows written: {rows}");

@@ -53,6 +53,13 @@ pub enum Error {
 
     #[snafu(display("Failed to send request with streaming: {}", err_msg))]
     ClientStreaming { err_msg: String, location: Location },
+
+    #[snafu(display("Failed to parse ascii string: {}", value))]
+    InvalidAscii {
+        value: String,
+        #[snafu(implicit)]
+        location: Location,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

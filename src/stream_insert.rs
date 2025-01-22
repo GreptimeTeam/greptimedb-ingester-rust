@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::error::Result;
+use crate::error::{self, IllegalDatabaseResponseSnafu};
 use greptime_proto::v1::greptime_request::Request;
 use greptime_proto::v1::{
     greptime_database_client::GreptimeDatabaseClient, InsertRequest, RowInsertRequests,
@@ -24,11 +26,9 @@ use snafu::OptionExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::metadata::{Ascii, MetadataValue};
 use tonic::transport::Channel;
 use tonic::{Response, Status};
-
-use crate::error::Result;
-use crate::error::{self, IllegalDatabaseResponseSnafu};
 
 /// A structure that provides some methods for streaming data insert.
 ///
@@ -59,21 +59,26 @@ impl StreamInserter {
         dbname: String,
         auth_header: Option<AuthHeader>,
         channel_size: usize,
-    ) -> StreamInserter {
-        let (send, recv) = tokio::sync::mpsc::channel(channel_size);
+        hint: Option<MetadataValue<Ascii>>,
+    ) -> Result<StreamInserter> {
+        let (send, recv) = mpsc::channel(channel_size);
 
         let join: JoinHandle<std::result::Result<Response<GreptimeResponse>, Status>> =
             tokio::spawn(async move {
                 let recv_stream = ReceiverStream::new(recv);
-                client.handle_requests(recv_stream).await
+                let mut request = tonic::Request::new(recv_stream);
+                if let Some(hint) = hint {
+                    request.metadata_mut().insert("x-greptime-hints", hint);
+                }
+                client.handle_requests(request).await
             });
 
-        StreamInserter {
+        Ok(StreamInserter {
             sender: send,
             auth_header,
             dbname,
             join,
-        }
+        })
     }
 
     #[deprecated(note = "Use row_insert instead.")]
