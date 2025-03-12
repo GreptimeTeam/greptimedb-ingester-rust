@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(clippy::print_stderr)]
+#![allow(clippy::print_stdout)]
+
 use derive_new::new;
 
 use greptimedb_ingester::api::v1::*;
