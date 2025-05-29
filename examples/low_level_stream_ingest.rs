@@ -30,7 +30,7 @@ use greptimedb_ingester::{ClientBuilder, Database, Result};
 /// This example shows how to continuously stream sensor readings to GreptimeDB
 pub async fn low_level_streaming_sensor_ingest() -> Result<()> {
     let config = DbConfig::from_env();
-    
+
     // 1. Create client connection with streaming configuration
     let grpc_client = ClientBuilder::default()
         .peers(vec![&config.endpoint])
@@ -49,7 +49,10 @@ pub async fn low_level_streaming_sensor_ingest() -> Result<()> {
         if let Err(e) = stream_inserter.row_insert(sensor_batch).await {
             eprintln!("Error inserting batch {}: {}", batch_id, e);
         } else {
-            println!("Successfully queued sensor batch {} for insertion", batch_id);
+            println!(
+                "Successfully queued sensor batch {} for insertion",
+                batch_id
+            );
         }
 
         sleep(Duration::from_millis(500)).await;
@@ -65,7 +68,7 @@ pub async fn low_level_streaming_sensor_ingest() -> Result<()> {
 /// This shows how to handle different types of time-series data simultaneously
 pub async fn low_level_concurrent_streaming() -> Result<()> {
     let config = DbConfig::from_env();
-    
+
     let grpc_client = ClientBuilder::default()
         .peers(vec![&config.endpoint])
         .build();
@@ -119,7 +122,7 @@ pub async fn low_level_concurrent_streaming() -> Result<()> {
 /// Demonstrates error handling and recovery in streaming scenarios
 pub async fn low_level_streaming_with_error_handling() -> Result<()> {
     let config = DbConfig::from_env();
-    
+
     let grpc_client = ClientBuilder::default()
         .peers(vec![&config.endpoint])
         .build();
@@ -258,7 +261,10 @@ async fn create_events_batch(batch_id: u32) -> RowInsertRequests {
             string_value(format!("app_{}", batch_id)),
             string_value(event_type.to_string()),
             timestamp_millisecond_value(current_time),
-            string_value(format!("Event {} occurred in batch {}", event_type, batch_id)),
+            string_value(format!(
+                "Event {} occurred in batch {}",
+                event_type, batch_id
+            )),
             i32_value(batch_id as i32),
         ],
     }];
@@ -357,7 +363,7 @@ fn build_test_schema() -> Vec<ColumnSchema> {
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("Starting low-level streaming API examples...");
-    
+
     if let Err(e) = low_level_streaming_sensor_ingest().await {
         eprintln!("Sensor streaming failed: {}", e);
     }

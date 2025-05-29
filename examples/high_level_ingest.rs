@@ -24,13 +24,13 @@ use greptimedb_ingester::api::v1::*;
 use greptimedb_ingester::helpers::schema::*;
 use greptimedb_ingester::helpers::values::*;
 use greptimedb_ingester::{
-    ChannelConfig, ChannelManager, ClientBuilder, ClientTlsOption, Database
+    ChannelConfig, ChannelManager, ClientBuilder, ClientTlsOption, Database,
 };
 
 #[tokio::main]
 async fn main() {
     let config = DbConfig::from_env();
-    
+
     let greptimedb_secure = std::env::var("GREPTIMEDB_TLS")
         .map(|s| s == "1")
         .unwrap_or(false);

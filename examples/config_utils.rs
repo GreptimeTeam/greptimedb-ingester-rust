@@ -45,14 +45,19 @@ impl DbConfig {
 
         for line in content.lines() {
             let line = line.trim();
-            if line.starts_with("db.endpoints") {
+            if line.starts_with("endpoints") {
                 endpoint = line
                     .split('=')
                     .nth(1)
-                    .and_then(|s| s.trim().trim_matches(&['[', ']', '"'][..]).split(',').next())
+                    .and_then(|s| {
+                        s.trim()
+                            .trim_matches(&['[', ']', '"'][..])
+                            .split(',')
+                            .next()
+                    })
                     .unwrap_or("127.0.0.1:4001")
                     .to_string();
-            } else if line.starts_with("db.database") {
+            } else if line.starts_with("dbname") {
                 database = line
                     .split('=')
                     .nth(1)
@@ -69,6 +74,6 @@ impl DbConfig {
 #[allow(dead_code)]
 fn main() {
     let config = DbConfig::from_env();
-    println!("Using Greptimedb endpoint: {}", config.endpoint);
+    println!("Using GreptimeDB endpoint: {}", config.endpoint);
     println!("Using database: {}", config.database);
 }

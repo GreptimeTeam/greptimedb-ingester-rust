@@ -26,11 +26,11 @@ use greptimedb_ingester::{ClientBuilder, Database, Result};
 /// Example of sensor data insertion using low-level API  
 pub async fn low_level_sensor_ingest() -> Result<()> {
     let config = DbConfig::from_env();
-    
+
     let grpc_client = ClientBuilder::default()
         .peers(vec![&config.endpoint])
         .build();
-    
+
     let database = Database::new_with_dbname(&config.database, grpc_client);
 
     let sensor_schema = build_sensor_schema();
@@ -56,14 +56,12 @@ pub async fn low_level_sensor_ingest() -> Result<()> {
 /// Use schema helpers to build column definitions for sensor table  
 fn build_sensor_schema() -> Vec<ColumnSchema> {
     vec![
-        // Tag columns - for indexing and grouping  
+        // Tag columns - for indexing and grouping
         tag("device_id", ColumnDataType::String),
         tag("location", ColumnDataType::String),
-
-        // Timestamp column - timeline for time series data  
+        // Timestamp column - timeline for time series data
         timestamp("timestamp", ColumnDataType::TimestampMillisecond),
-
-        // Field columns - actual measurement values  
+        // Field columns - actual measurement values
         field("temperature", ColumnDataType::Float64),
         field("humidity", ColumnDataType::Float64),
         field("pressure", ColumnDataType::Float64),
@@ -80,7 +78,7 @@ fn build_sensor_data() -> Vec<Row> {
         values: vec![
             string_value("sensor_001".to_string()),
             string_value("building_a_floor_1".to_string()),
-            timestamp_millisecond_value(1748500685000),  
+            timestamp_millisecond_value(1748500685000),
             f64_value(23.5),
             f64_value(65.2),
             f64_value(1013.25),
@@ -121,13 +119,13 @@ fn build_sensor_data() -> Vec<Row> {
 /// Demonstrate batch insertion of different data types  
 pub async fn low_level_mixed_data_ingest() -> Result<()> {
     let config = DbConfig::from_env();
-    
+
     let grpc_client = ClientBuilder::default()
         .peers(vec![&config.endpoint])
         .build();
     let database = Database::new_with_dbname(&config.database, grpc_client);
 
-    // Build table with various data types  
+    // Build table with various data types
     let mixed_schema = vec![
         tag("category", ColumnDataType::String),
         timestamp("event_time", ColumnDataType::TimestampNanosecond),
@@ -140,21 +138,19 @@ pub async fn low_level_mixed_data_ingest() -> Result<()> {
         field("date_val", ColumnDataType::Date),
     ];
 
-    let mixed_data = vec![
-        Row {
-            values: vec![
-                string_value("test_category".to_string()),
-                timestamp_nanosecond_value(1748500685000000000),
-                i8_value(127),
-                i16_value(32767),
-                i64_value(9223372036854775807),
-                u32_value(4294967295),
-                f32_value(std::f32::consts::PI),
-                binary_value(vec![0x48, 0x65, 0x6c, 0x6c, 0x6f]),
-                date_value(19358),
-            ],
-        },
-    ];
+    let mixed_data = vec![Row {
+        values: vec![
+            string_value("test_category".to_string()),
+            timestamp_nanosecond_value(1748500685000000000),
+            i8_value(127),
+            i16_value(32767),
+            i64_value(9223372036854775807),
+            u32_value(4294967295),
+            f32_value(std::f32::consts::PI),
+            binary_value(vec![0x48, 0x65, 0x6c, 0x6c, 0x6f]),
+            date_value(19358),
+        ],
+    }];
 
     let insert_request = RowInsertRequests {
         inserts: vec![RowInsertRequest {
