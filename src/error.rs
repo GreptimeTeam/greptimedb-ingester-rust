@@ -64,10 +64,7 @@ pub enum Error {
 
     // Server error carried in Tonic Status's metadata.
     #[snafu(display("{}", msg))]
-    Server {
-        status: Box<Status>,
-        msg: Box<String>,
-    },
+    Server { status: Box<Status>, msg: String },
 
     #[snafu(display("Illegal Database response: {err_msg}"))]
     IllegalDatabaseResponse {
@@ -107,7 +104,7 @@ impl From<Status> for Error {
 
         Self::Server {
             status: Box::new(e),
-            msg: Box::new(msg),
+            msg,
         }
     }
 }
