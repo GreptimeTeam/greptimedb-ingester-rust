@@ -39,7 +39,7 @@ impl DoPutMetadata {
 }
 
 /// The response in the "DoPut" returned stream.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct DoPutResponse {
     /// The same "request_id" in the request; see the [DoPutMetadata].
     request_id: i64,
