@@ -6,24 +6,34 @@ license = "Apache-2.0"
 description = "A rust client for GreptimeDB gRPC protocol"
 
 [dependencies]
+arrow-flight = "54.2"
+async-stream = "0.3"
+async-trait = "0.1"
+base64 = "0.22"
 dashmap = "6.1"
 enum_dispatch = "0.3"
 futures = "0.3"
 futures-util  = "0.3"
-greptime-proto = { git = "https://github.com/GreptimeTeam/greptime-proto.git", tag = "v0.9.0" }
+greptime-proto = { git = "https://github.com/GreptimeTeam/greptime-proto.git", rev = "454c52634c3bac27de10bf0d85d5533eed1cf03f" }
+hyper = "1.1"
+lazy_static = "1.4"
 parking_lot = "0.12"
-prost = "0.12"
+prost = { version = "0.13", features = ["no-recursion-limit"] }
 rand = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 snafu = "0.8"
-tokio = { version = "1", features = ["rt", "time"] }
+tokio = { version = "1.40", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }
-tonic = { version = "0.11", features = ["tls", "tls-roots", "gzip", "zstd"] }
-tower = "0.4"
+tokio-util = { version = "0.7", features = ["io-util", "compat"] }
+tonic = { version = "0.12", features = ["tls", "gzip", "zstd"] }
+tower = "0.5"
 derive_builder = "0.20"
 
 [build-dependencies]
-tonic-build = "0.9"
+tonic-build = "0.11"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full"] }
+hyper-util = "0.1"
+tokio = { version = "1.40", features = ["full"] }
 derive-new = "0.7"

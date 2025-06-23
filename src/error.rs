@@ -15,7 +15,7 @@
 use std::io;
 
 use snafu::{Location, Snafu};
-use tonic::Status;
+use tonic::{metadata::errors::InvalidMetadataValue, Status};
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
@@ -34,11 +34,11 @@ pub enum Error {
         location: Location,
     },
 
-    #[snafu(display("Failed to create gRPC channel, source: {}", source))]
+    #[snafu(display("Failed to create gRPC channel"))]
     CreateChannel {
-        source: tonic::transport::Error,
         #[snafu(implicit)]
         location: Location,
+        source: tonic::transport::Error,
     },
 
     #[snafu(display("Unknown proto column datatype: {}", datatype))]
@@ -48,7 +48,7 @@ pub enum Error {
         location: Location,
     },
 
-    #[snafu(display("Illegal GRPC client state: {}", err_msg))]
+    #[snafu(display("Illegal gRPC client state: {}", err_msg))]
     IllegalGrpcClientState {
         err_msg: String,
         #[snafu(implicit)]
@@ -80,9 +80,18 @@ pub enum Error {
         location: Location,
     },
 
-    #[snafu(display("Failed to parse ascii string: {}", value))]
-    InvalidAscii {
-        value: String,
+    #[snafu(display("Invalid Tonic metadata value"))]
+    InvalidTonicMetadataValue {
+        #[snafu(source)]
+        error: InvalidMetadataValue,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Failed to serde Json"))]
+    SerdeJson {
+        #[snafu(source)]
+        error: serde_json::error::Error,
         #[snafu(implicit)]
         location: Location,
     },

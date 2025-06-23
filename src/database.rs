@@ -12,20 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::api::v1::auth_header::AuthScheme;
-use crate::api::v1::greptime_request::Request;
-use crate::api::v1::{
-    greptime_response, AffectedRows, AuthHeader, DeleteRequests, GreptimeRequest, InsertRequest,
-    InsertRequests, RequestHeader, RowInsertRequests,
+use std::pin::Pin;
+use std::str::FromStr;
+
+use arrow_flight::FlightData;
+use base64::prelude::BASE64_STANDARD;
+use base64::Engine;
+use futures::future;
+use futures_util::{Stream, StreamExt, TryStreamExt};
+use greptime_proto::v1::auth_header::AuthScheme;
+use greptime_proto::v1::greptime_database_client::GreptimeDatabaseClient;
+use greptime_proto::v1::greptime_request::Request;
+use greptime_proto::v1::{
+    greptime_response, AffectedRows, AuthHeader, Basic, DeleteRequests, GreptimeRequest,
+    RequestHeader, RowInsertRequests,
 };
-use crate::stream_insert::StreamInserter;
+use snafu::{OptionExt, ResultExt};
+use tonic::metadata::{AsciiMetadataKey, AsciiMetadataValue, MetadataMap, MetadataValue};
+use tonic::transport::Channel;
 
-use crate::error::{IllegalDatabaseResponseSnafu, InvalidAsciiSnafu};
-use crate::{Client, Result};
-use snafu::OptionExt;
-use tonic::metadata::MetadataValue;
+use crate::client::Client;
+use crate::error::{self, IllegalDatabaseResponseSnafu};
+use crate::flight::do_put::DoPutResponse;
+use crate::Result;
 
-const DEFAULT_STREAMING_INSERTER_BUFFER_SIZE: usize = 1024;
+type FlightDataStream = Pin<Box<dyn Stream<Item = FlightData> + Send>>;
+
+type DoPutResponseStream = Pin<Box<dyn Stream<Item = Result<DoPutResponse>>>>;
 
 /// The Client for GreptimeDB Database API.
 #[derive(Clone, Debug, Default)]
@@ -36,6 +49,19 @@ pub struct Database {
 
     client: Client,
     auth_header: Option<AuthHeader>,
+}
+
+pub struct DatabaseClient {
+    pub inner: GreptimeDatabaseClient<Channel>,
+}
+
+fn make_database_client(client: &Client) -> Result<DatabaseClient> {
+    let (_, channel) = client.find_channel()?;
+    Ok(DatabaseClient {
+        inner: GreptimeDatabaseClient::new(channel)
+            .max_decoding_message_size(client.max_grpc_recv_message_size())
+            .max_encoding_message_size(client.max_grpc_send_message_size()),
+    })
 }
 
 impl Database {
@@ -71,73 +97,65 @@ impl Database {
         });
     }
 
-    /// Write insert requests to GreptimeDB and get rows written
-    #[deprecated(note = "Use row_insert instead.")]
-    pub async fn insert(&self, requests: Vec<InsertRequest>) -> Result<u32> {
-        self.handle(Request::Inserts(InsertRequests { inserts: requests }), None)
-            .await
-    }
-
     /// Write Row based insert requests to GreptimeDB and get rows written
-    pub async fn row_insert(&self, requests: RowInsertRequests) -> Result<u32> {
-        self.handle(Request::RowInserts(requests), None).await
+    pub async fn insert(&self, requests: RowInsertRequests) -> Result<u32> {
+        self.handle(Request::RowInserts(requests), &[]).await
     }
 
     /// Write Row based insert requests with hint to GreptimeDB and get rows written
-    pub async fn row_insert_with_hint(
+    pub async fn insert_with_hints(
         &self,
         requests: RowInsertRequests,
-        hint: &str,
+        hints: &[(&str, &str)],
     ) -> Result<u32> {
-        self.handle(Request::RowInserts(requests), Some(hint)).await
-    }
-
-    /// Initialise a streaming insert handle, using default buffer size `1024`
-    pub fn default_streaming_inserter(&self) -> Result<StreamInserter> {
-        self.streaming_inserter(DEFAULT_STREAMING_INSERTER_BUFFER_SIZE, None)
-    }
-
-    /// Initialise a streaming insert handle, using custom buffer size and hint
-    pub fn streaming_inserter(
-        &self,
-        channel_size: usize,
-        hint: Option<&str>,
-    ) -> Result<StreamInserter> {
-        let client = self.client.make_database_client()?.inner;
-        let hint = hint
-            .map(|value| {
-                MetadataValue::try_from(value).map_err(|_| InvalidAsciiSnafu { value }.build())
-            })
-            .transpose()?;
-
-        StreamInserter::new(
-            client,
-            self.dbname().to_string(),
-            self.auth_header.clone(),
-            channel_size,
-            hint,
-        )
+        self.handle(Request::RowInserts(requests), hints).await
     }
 
     /// Issue a delete to database
     pub async fn delete(&self, request: DeleteRequests) -> Result<u32> {
-        self.handle(Request::Deletes(request), None).await
+        self.handle(Request::Deletes(request), &[]).await
     }
 
-    async fn handle(&self, request: Request, hint: Option<&str>) -> Result<u32> {
-        let mut client = self.client.make_database_client()?.inner;
+    /// Ingest a stream of [RecordBatch]es that belong to a table, using Arrow Flight's "`DoPut`"
+    /// method. The return value is also a stream, produces [DoPutResponse]s.
+    pub async fn do_put(&self, stream: FlightDataStream) -> Result<DoPutResponseStream> {
+        let mut request = tonic::Request::new(stream);
+
+        if let Some(AuthHeader {
+            auth_scheme: Some(AuthScheme::Basic(Basic { username, password })),
+        }) = &self.auth_header
+        {
+            let encoded = BASE64_STANDARD.encode(format!("{username}:{password}"));
+            let value =
+                MetadataValue::from_str(&encoded).context(error::InvalidTonicMetadataValueSnafu)?;
+            request.metadata_mut().insert("x-greptime-auth", value);
+        }
+
+        request.metadata_mut().insert(
+            "x-greptime-db-name",
+            MetadataValue::from_str(&self.dbname).context(error::InvalidTonicMetadataValueSnafu)?,
+        );
+
+        let mut client = self.client.make_flight_client(false, false)?;
+        let response = client.mut_inner().do_put(request).await?;
+        let response = response
+            .into_inner()
+            .map_err(Into::into)
+            .and_then(|x| future::ready(DoPutResponse::try_from(x)))
+            .boxed();
+        Ok(response)
+    }
+
+    async fn handle(&self, request: Request, hints: &[(&str, &str)]) -> Result<u32> {
+        let mut client = make_database_client(&self.client)?;
         let request = self.to_rpc_request(request);
         let mut request = tonic::Request::new(request);
-        if let Some(hint) = hint {
-            let hint = MetadataValue::try_from(hint).map_err(|_| {
-                InvalidAsciiSnafu {
-                    value: hint.to_string(),
-                }
-                .build()
-            })?;
-            request.metadata_mut().insert("x-greptime-hints", hint);
+        if !hints.is_empty() {
+            Self::put_hints(request.metadata_mut(), hints)?;
         }
+
         let response = client
+            .inner
             .handle(request)
             .await?
             .into_inner()
@@ -160,7 +178,20 @@ impl Database {
             request: Some(request),
         }
     }
-}
 
-#[cfg(test)]
-mod tests {}
+    fn put_hints(metadata: &mut MetadataMap, hints: &[(&str, &str)]) -> Result<()> {
+        let Some(value) = hints
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .reduce(|a, b| format!("{},{}", a, b))
+        else {
+            return Ok(());
+        };
+
+        let key = AsciiMetadataKey::from_static("x-greptime-hints");
+        let value =
+            AsciiMetadataValue::from_str(&value).context(error::InvalidTonicMetadataValueSnafu)?;
+        metadata.insert(key, value);
+        Ok(())
+    }
+}

@@ -19,17 +19,17 @@ mod config_utils;
 use config_utils::DbConfig;
 
 use greptimedb_ingester::api::v1::*;
+use greptimedb_ingester::client::Client;
 use greptimedb_ingester::helpers::schema::*;
 use greptimedb_ingester::helpers::values::*;
-use greptimedb_ingester::{ClientBuilder, Database, Result};
+use greptimedb_ingester::{database::Database, Result};
 
 /// Example of sensor data insertion using low-level API  
 pub async fn low_level_sensor_ingest() -> Result<()> {
     let config = DbConfig::from_env();
+    let urls = vec![config.endpoint.clone()];
 
-    let grpc_client = ClientBuilder::default()
-        .peers(vec![&config.endpoint])
-        .build();
+    let grpc_client = Client::with_urls(&urls);
 
     let database = Database::new_with_dbname(&config.database, grpc_client);
 
@@ -47,7 +47,7 @@ pub async fn low_level_sensor_ingest() -> Result<()> {
         }],
     };
 
-    let affected_rows = database.row_insert(insert_request).await?;
+    let affected_rows = database.insert(insert_request).await?;
     println!("Successfully inserted {} rows", affected_rows);
 
     Ok(())
@@ -72,57 +72,52 @@ fn build_sensor_schema() -> Vec<ColumnSchema> {
 
 /// Use value helpers to build sensor data rows  
 fn build_sensor_data() -> Vec<Row> {
-    let mut rows = Vec::new();
-
-    rows.push(Row {
-        values: vec![
-            string_value("sensor_001".to_string()),
-            string_value("building_a_floor_1".to_string()),
-            timestamp_millisecond_value(1748500685000),
-            f64_value(23.5),
-            f64_value(65.2),
-            f64_value(1013.25),
-            i32_value(85),
-            bool_value(true),
-        ],
-    });
-
-    rows.push(Row {
-        values: vec![
-            string_value("sensor_002".to_string()),
-            string_value("building_a_floor_2".to_string()),
-            timestamp_millisecond_value(1748500685000),
-            f64_value(24.1),
-            f64_value(62.8),
-            f64_value(1012.80),
-            i32_value(78),
-            bool_value(true),
-        ],
-    });
-
-    rows.push(Row {
-        values: vec![
-            string_value("sensor_003".to_string()),
-            string_value("building_b_floor_1".to_string()),
-            timestamp_millisecond_value(1748500685000),
-            f64_value(22.8),
-            f64_value(68.5),
-            f64_value(1014.10),
-            i32_value(15),
-            bool_value(false),
-        ],
-    });
-
-    rows
+    vec![
+        Row {
+            values: vec![
+                string_value("sensor_001".to_string()),
+                string_value("building_a_floor_1".to_string()),
+                timestamp_millisecond_value(1748500685000),
+                f64_value(23.5),
+                f64_value(65.2),
+                f64_value(1013.25),
+                i32_value(85),
+                bool_value(true),
+            ],
+        },
+        Row {
+            values: vec![
+                string_value("sensor_002".to_string()),
+                string_value("building_a_floor_2".to_string()),
+                timestamp_millisecond_value(1748500685000),
+                f64_value(24.1),
+                f64_value(62.8),
+                f64_value(1012.80),
+                i32_value(78),
+                bool_value(true),
+            ],
+        },
+        Row {
+            values: vec![
+                string_value("sensor_003".to_string()),
+                string_value("building_b_floor_1".to_string()),
+                timestamp_millisecond_value(1748500685000),
+                f64_value(22.8),
+                f64_value(68.5),
+                f64_value(1014.10),
+                i32_value(15),
+                bool_value(false),
+            ],
+        },
+    ]
 }
 
 /// Demonstrate batch insertion of different data types  
 pub async fn low_level_mixed_data_ingest() -> Result<()> {
     let config = DbConfig::from_env();
 
-    let grpc_client = ClientBuilder::default()
-        .peers(vec![&config.endpoint])
-        .build();
+    let urls = vec![config.endpoint.clone()];
+    let grpc_client = Client::with_urls(&urls);
     let database = Database::new_with_dbname(&config.database, grpc_client);
 
     // Build table with various data types
@@ -162,7 +157,7 @@ pub async fn low_level_mixed_data_ingest() -> Result<()> {
         }],
     };
 
-    let affected_rows = database.row_insert(insert_request).await?;
+    let affected_rows = database.insert(insert_request).await?;
     println!("Mixed data insert: {} rows affected", affected_rows);
 
     Ok(())
