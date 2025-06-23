@@ -17,18 +17,12 @@ pub mod do_put;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use arrow_flight::{FlightData, SchemaAsIpc};
-use arrow_ipc::{writer, MessageHeader};
-use bytes::Bytes;
-use flatbuffers::FlatBufferBuilder;
-use greptime_proto::v1::{AffectedRows, FlightMetadata};
-use prost::bytes::Bytes as ProstBytes;
-use prost::Message;
+use arrow_ipc::writer;
 
 #[derive(Debug, Clone)]
 pub enum FlightMessage {
     Schema(SchemaRef),
     RecordBatch(RecordBatch),
-    AffectedRows(usize),
 }
 
 pub struct FlightEncoder {
@@ -87,33 +81,6 @@ impl FlightEncoder {
 
                 encoded_batch.into()
             }
-            FlightMessage::AffectedRows(rows) => {
-                let metadata = FlightMetadata {
-                    affected_rows: Some(AffectedRows { value: rows as _ }),
-                    metrics: None,
-                }
-                .encode_to_vec();
-                FlightData {
-                    flight_descriptor: None,
-                    data_header: build_none_flight_msg(),
-                    app_metadata: metadata.into(),
-                    data_body: ProstBytes::default(),
-                }
-            }
         }
     }
-}
-
-fn build_none_flight_msg() -> Bytes {
-    let mut builder = FlatBufferBuilder::new();
-    let mut message = arrow::ipc::MessageBuilder::new(&mut builder);
-    message.add_version(arrow::ipc::MetadataVersion::V5);
-    message.add_header_type(MessageHeader::NONE);
-    message.add_bodyLength(0);
-
-    let data = message.finish();
-    builder.finish(data, None);
-    let bytes = builder.finished_data();
-
-    Bytes::copy_from_slice(bytes)
 }

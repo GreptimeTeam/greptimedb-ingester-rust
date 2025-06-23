@@ -14,7 +14,6 @@ arrow-schema = { version = "54.2", features = ["serde"] }
 async-stream = "0.3"
 async-trait = "0.1"
 base64 = "0.22"
-bytes = { version = "1.7", features = ["serde"] }
 dashmap = "6.1"
 enum_dispatch = "0.3"
 flatbuffers = "24"
