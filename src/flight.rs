@@ -13,3 +13,107 @@
 // limitations under the License.
 
 pub mod do_put;
+
+use arrow::datatypes::SchemaRef;
+use arrow::record_batch::RecordBatch;
+use arrow_flight::{FlightData, SchemaAsIpc};
+use arrow_ipc::{writer, MessageHeader};
+use bytes::Bytes;
+use flatbuffers::FlatBufferBuilder;
+use greptime_proto::v1::{AffectedRows, FlightMetadata};
+use prost::bytes::Bytes as ProstBytes;
+use prost::Message;
+
+#[derive(Debug, Clone)]
+pub enum FlightMessage {
+    Schema(SchemaRef),
+    RecordBatch(RecordBatch),
+    AffectedRows(usize),
+}
+
+pub struct FlightEncoder {
+    write_options: writer::IpcWriteOptions,
+    data_gen: writer::IpcDataGenerator,
+    dictionary_tracker: writer::DictionaryTracker,
+}
+
+impl Default for FlightEncoder {
+    fn default() -> Self {
+        let write_options = writer::IpcWriteOptions::default()
+            .try_with_compression(Some(arrow::ipc::CompressionType::LZ4_FRAME))
+            .unwrap();
+
+        Self {
+            write_options,
+            data_gen: writer::IpcDataGenerator::default(),
+            dictionary_tracker: writer::DictionaryTracker::new(false),
+        }
+    }
+}
+
+impl FlightEncoder {
+    /// Creates new [FlightEncoder] with compression disabled.
+    pub fn with_compression_disabled() -> Self {
+        let write_options = writer::IpcWriteOptions::default()
+            .try_with_compression(None)
+            .unwrap();
+
+        Self {
+            write_options,
+            data_gen: writer::IpcDataGenerator::default(),
+            dictionary_tracker: writer::DictionaryTracker::new(false),
+        }
+    }
+
+    pub fn encode(&mut self, flight_message: FlightMessage) -> FlightData {
+        match flight_message {
+            FlightMessage::Schema(schema) => SchemaAsIpc::new(&schema, &self.write_options).into(),
+            FlightMessage::RecordBatch(record_batch) => {
+                let (encoded_dictionaries, encoded_batch) = self
+                    .data_gen
+                    .encoded_batch(
+                        &record_batch,
+                        &mut self.dictionary_tracker,
+                        &self.write_options,
+                    )
+                    .expect("DictionaryTracker configured above to not fail on replacement");
+
+                // TODO(LFC): Handle dictionary as FlightData here, when we supported Arrow's Dictionary DataType.
+                // Currently we don't have a datatype corresponding to Arrow's Dictionary DataType,
+                // so there won't be any "dictionaries" here. Assert to be sure about it, and
+                // perform a "testing guard" in case we forgot to handle the possible "dictionaries"
+                // here in the future.
+                debug_assert_eq!(encoded_dictionaries.len(), 0);
+
+                encoded_batch.into()
+            }
+            FlightMessage::AffectedRows(rows) => {
+                let metadata = FlightMetadata {
+                    affected_rows: Some(AffectedRows { value: rows as _ }),
+                    metrics: None,
+                }
+                .encode_to_vec();
+                FlightData {
+                    flight_descriptor: None,
+                    data_header: build_none_flight_msg(),
+                    app_metadata: metadata.into(),
+                    data_body: ProstBytes::default(),
+                }
+            }
+        }
+    }
+}
+
+fn build_none_flight_msg() -> Bytes {
+    let mut builder = FlatBufferBuilder::new();
+    let mut message = arrow::ipc::MessageBuilder::new(&mut builder);
+    message.add_version(arrow::ipc::MetadataVersion::V5);
+    message.add_header_type(MessageHeader::NONE);
+    message.add_bodyLength(0);
+
+    let data = message.finish();
+    builder.finish(data, None);
+    let bytes = builder.finished_data();
+
+    Bytes::copy_from_slice(bytes)
+}

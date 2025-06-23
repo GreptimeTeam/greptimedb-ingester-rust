@@ -6,12 +6,18 @@ license = "Apache-2.0"
 description = "A rust client for GreptimeDB gRPC protocol"
 
 [dependencies]
+arrow = { version = "54.2", features = ["prettyprint"] }
+arrow-array = { version = "54.2", default-features = false, features = ["chrono-tz"] }
 arrow-flight = "54.2"
+arrow-ipc = { version = "54.2", default-features = false, features = ["lz4", "zstd"] }
+arrow-schema = { version = "54.2", features = ["serde"] }
 async-stream = "0.3"
 async-trait = "0.1"
 base64 = "0.22"
+bytes = { version = "1.7", features = ["serde"] }
 dashmap = "6.1"
 enum_dispatch = "0.3"
+flatbuffers = "24"
 futures = "0.3"
 futures-util  = "0.3"
 greptime-proto = { git = "https://github.com/GreptimeTeam/greptime-proto.git", rev = "454c52634c3bac27de10bf0d85d5533eed1cf03f" }
