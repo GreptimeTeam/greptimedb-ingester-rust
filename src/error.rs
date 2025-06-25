@@ -95,6 +95,59 @@ pub enum Error {
         #[snafu(implicit)]
         location: Location,
     },
+
+    #[snafu(display("Cannot create RecordBatch from empty table"))]
+    EmptyTable {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Failed to create Arrow RecordBatch"))]
+    CreateRecordBatch {
+        #[snafu(source)]
+        error: arrow_schema::ArrowError,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Unsupported data type: {:?}", data_type))]
+    UnsupportedDataType {
+        data_type: String,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Cannot write empty rows"))]
+    EmptyRows {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Failed to serialize metadata"))]
+    SerializeMetadata {
+        #[snafu(source)]
+        error: serde_json::Error,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Failed to send data to stream"))]
+    SendData {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Response stream ended unexpectedly"))]
+    StreamEnded {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Failed to close sender channel"))]
+    CloseSender {
+        #[snafu(implicit)]
+        location: Location,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

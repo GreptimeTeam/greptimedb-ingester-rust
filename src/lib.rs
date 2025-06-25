@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod api;
+pub mod bulk;
 pub mod channel_manager;
 pub mod client;
 pub mod database;
@@ -20,8 +21,18 @@ mod error;
 pub mod flight;
 pub mod helpers;
 pub mod load_balance;
+pub mod table;
 
 pub use self::channel_manager::{ChannelConfig, ChannelManager, ClientTlsOption};
 pub use self::error::{Error, Result};
+
+// Re-export bulk module components for easier access
+pub use self::bulk::{BulkInserter, BulkStreamWriter, BulkWriteOptions, ColumnType};
+
+// Re-export table module components for easier access
+pub use self::table::{Column, Row, Table, TableBuilder, Value};
+
+// Re-export API types for direct access
+pub use self::api::v1::{ColumnDataType, SemanticType};
 
 pub const DEFAULT_SCHEMA_NAME: &str = "public";
