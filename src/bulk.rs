@@ -32,7 +32,7 @@ use futures::{SinkExt, Stream, StreamExt};
 use crate::api::v1::ColumnDataType;
 use crate::client::Client;
 use crate::database::Database;
-use crate::flight::do_put::DoPutMetadata;
+use crate::flight::do_put::{DoPutMetadata, DoPutResponse};
 use crate::flight::{FlightEncoder, FlightMessage};
 use crate::table::{Column, Row, Table};
 use crate::{error, Result};
@@ -43,6 +43,34 @@ macro_rules! build_primitive_array {
     ($rows:expr, $col_idx:expr, $getter:ident, $array_type:ty) => {{
         let values: Vec<Option<_>> = $rows.iter().map(|row| row.$getter($col_idx)).collect();
         Arc::new(<$array_type>::from(values)) as Arc<dyn Array>
+    }};
+}
+
+// Macro to generate binary array conversion
+macro_rules! build_binary_array {
+    ($rows:expr, $col_idx:expr, $getter:ident) => {{
+        let mut builder = BinaryBuilder::with_capacity($rows.len(), $rows.len() * 64);
+        for row in $rows {
+            match row.$getter($col_idx) {
+                Some(data) => builder.append_value(data),
+                None => builder.append_null(),
+            }
+        }
+        Arc::new(builder.finish()) as Arc<dyn Array>
+    }};
+}
+
+// Macro for JSON array conversion (strings to bytes)
+macro_rules! build_json_array {
+    ($rows:expr, $col_idx:expr) => {{
+        let mut builder = BinaryBuilder::with_capacity($rows.len(), $rows.len() * 128);
+        for row in $rows {
+            match row.get_json($col_idx) {
+                Some(json_str) => builder.append_value(json_str.as_bytes()),
+                None => builder.append_null(),
+            }
+        }
+        Arc::new(builder.finish()) as Arc<dyn Array>
     }};
 }
 
@@ -86,7 +114,7 @@ impl Default for BulkWriteOptions {
     fn default() -> Self {
         Self {
             compression: true,
-            timeout_ms: 30000,
+            timeout_ms: 60000,
             parallelism: 1,
         }
     }
@@ -116,7 +144,7 @@ impl BulkWriteOptions {
 /// Each writer is bound to a specific table with fixed schema
 pub struct BulkStreamWriter {
     sender: mpsc::Sender<FlightData>,
-    response_stream: Pin<Box<dyn Stream<Item = Result<crate::flight::do_put::DoPutResponse>>>>,
+    response_stream: Pin<Box<dyn Stream<Item = Result<DoPutResponse>>>>,
     table_name: String,
     table_schema: Vec<Column>,
     // Cache the Arrow schema to avoid recreating it for each batch
@@ -129,6 +157,8 @@ pub struct BulkStreamWriter {
     timeout_ms: u64,
     // Track pending requests: request_id -> (sent_time, completed)
     pending_requests: HashMap<i64, (Instant, bool)>,
+    // Cache completed responses that were processed but not yet retrieved
+    completed_responses: HashMap<i64, DoPutResponse>,
 }
 
 impl BulkStreamWriter {
@@ -175,41 +205,117 @@ impl BulkStreamWriter {
             parallelism: options.parallelism,
             timeout_ms: options.timeout_ms,
             pending_requests: HashMap::new(),
+            completed_responses: HashMap::new(),
         })
     }
 
     /// Write rows to the stream using the fixed table schema
-    pub async fn write_rows(&mut self, rows: Vec<Row>) -> Result<u64> {
+    pub async fn write_rows(&mut self, rows: Vec<Row>) -> Result<DoPutResponse> {
+        if rows.is_empty() {
+            // Return a dummy response for empty input
+            return Ok(DoPutResponse::new(0, 0));
+        }
+
+        // Use the async implementation and wait for the response
+        let request_id = self.write_rows_async(rows).await?;
+        self.wait_for_response(request_id).await
+    }
+
+    /// Submit rows for writing without waiting for response
+    /// Returns a request_id that can be used to wait for the specific response
+    pub async fn write_rows_async(&mut self, rows: Vec<Row>) -> Result<i64> {
         if rows.is_empty() {
             return Ok(0);
         }
 
         let record_batch = self.rows_to_record_batch(&rows)?;
-        let total_rows = record_batch.num_rows() as u64;
-        let _response = self.write_record_batch_parallel(record_batch).await?;
+        let request_id = self.submit_record_batch(record_batch).await?;
 
-        Ok(total_rows)
+        Ok(request_id)
     }
 
-    /// Write rows to the stream and return the server response
-    pub async fn write_rows_with_response(
-        &mut self,
-        rows: Vec<Row>,
-    ) -> Result<(u64, crate::flight::do_put::DoPutResponse)> {
-        ensure!(!rows.is_empty(), error::EmptyRowsSnafu);
+    /// Wait for a specific request's response by request_id
+    pub async fn wait_for_response(&mut self, target_request_id: i64) -> Result<DoPutResponse> {
+        // Check if the response is already cached
+        if let Some(response) = self.completed_responses.remove(&target_request_id) {
+            self.pending_requests.remove(&target_request_id);
+            return Ok(response);
+        }
 
-        let record_batch = self.rows_to_record_batch(&rows)?;
-        let total_rows = record_batch.num_rows() as u64;
-        let response = self.write_record_batch_parallel(record_batch).await?;
+        let timeout_duration = Duration::from_millis(self.timeout_ms);
+        let start_time = Instant::now();
 
-        Ok((total_rows, response))
+        loop {
+            // Check timeout
+            if start_time.elapsed() > timeout_duration {
+                return error::RequestTimeoutSnafu {
+                    request_ids: vec![target_request_id],
+                    timeout_ms: self.timeout_ms,
+                }
+                .fail();
+            }
+
+            if let Some(response) = self.response_stream.next().await {
+                let response = response?;
+                let request_id = response.request_id();
+                if request_id == target_request_id {
+                    // Mark as completed and remove from pending
+                    self.pending_requests.remove(&request_id);
+                    return Ok(response);
+                } else {
+                    // Cache other responses and mark as completed
+                    self.completed_responses.insert(request_id, response);
+                    if let Some((_, completed)) = self.pending_requests.get_mut(&request_id) {
+                        *completed = true;
+                    }
+                }
+            } else {
+                return error::StreamEndedSnafu.fail();
+            }
+        }
     }
 
-    /// Write a record batch to the stream with parallel processing
-    async fn write_record_batch_parallel(
-        &mut self,
-        batch: RecordBatch,
-    ) -> Result<crate::flight::do_put::DoPutResponse> {
+    /// Wait for all pending requests to complete and return the responses
+    pub async fn wait_for_all_pending(&mut self) -> Result<Vec<DoPutResponse>> {
+        let mut responses = Vec::new();
+
+        // First, drain all cached responses that have corresponding pending requests
+        let completed_responses = std::mem::take(&mut self.completed_responses);
+        for (request_id, response) in completed_responses {
+            match self.pending_requests.remove(&request_id) {
+                Some(_) => responses.push(response),
+                None => {
+                    // If no corresponding pending request, put it back (shouldn't happen normally)
+                    self.completed_responses.insert(request_id, response);
+                }
+            }
+        }
+
+        // Then wait for remaining responses
+        while !self.pending_requests.is_empty() {
+            if let Some(response) = self.response_stream.next().await {
+                let response = response?;
+                let request_id = response.request_id();
+
+                // Mark as completed and remove from pending
+                match self.pending_requests.remove(&request_id) {
+                    Some(_) => responses.push(response),
+                    None => {
+                        // If no corresponding pending request, cache it
+                        self.completed_responses.insert(request_id, response);
+                    }
+                }
+            } else {
+                return error::StreamEndedSnafu.fail();
+            }
+        }
+
+        Ok(responses)
+    }
+
+    /// Submit a record batch without waiting for response
+    /// Returns the request_id for later tracking
+    async fn submit_record_batch(&mut self, batch: RecordBatch) -> Result<i64> {
         // Send schema first if not already sent
         if !self.schema_sent {
             let mut schema_data = self.encoder.encode(FlightMessage::Schema(batch.schema()));
@@ -256,12 +362,11 @@ impl BulkStreamWriter {
             .await
             .map_err(|_| error::SendDataSnafu.build())?;
 
-        // Track this request
+        // Track this request but don't wait for response
         self.pending_requests
             .insert(request_id, (Instant::now(), false));
 
-        // Wait for this specific request's response
-        self.wait_for_response(request_id).await
+        Ok(request_id)
     }
 
     /// Process pending responses and handle timeouts
@@ -270,14 +375,12 @@ impl BulkStreamWriter {
         let now = Instant::now();
 
         // Check for timeouts
-        let timed_out_requests: Vec<i64> = self
-            .pending_requests
-            .iter()
-            .filter(|(_, (sent_time, completed))| {
-                !completed && now.duration_since(*sent_time) > timeout_duration
-            })
-            .map(|(id, _)| *id)
-            .collect();
+        let mut timed_out_requests = Vec::new();
+        for (&request_id, &(sent_time, completed)) in &self.pending_requests {
+            if !completed && now.duration_since(sent_time) > timeout_duration {
+                timed_out_requests.push(request_id);
+            }
+        }
 
         if !timed_out_requests.is_empty() {
             return error::RequestTimeoutSnafu {
@@ -293,6 +396,8 @@ impl BulkStreamWriter {
             let request_id = response.request_id();
             if let Some((_, completed)) = self.pending_requests.get_mut(&request_id) {
                 *completed = true;
+                // Cache the response so it can be retrieved later
+                self.completed_responses.insert(request_id, response);
             }
         }
 
@@ -301,43 +406,6 @@ impl BulkStreamWriter {
             .retain(|_, (_, completed)| !*completed);
 
         Ok(())
-    }
-
-    /// Wait for a specific request's response by request_id
-    async fn wait_for_response(
-        &mut self,
-        target_request_id: i64,
-    ) -> Result<crate::flight::do_put::DoPutResponse> {
-        let timeout_duration = Duration::from_millis(self.timeout_ms);
-        let start_time = Instant::now();
-
-        loop {
-            // Check timeout
-            if start_time.elapsed() > timeout_duration {
-                return error::RequestTimeoutSnafu {
-                    request_ids: vec![target_request_id],
-                    timeout_ms: self.timeout_ms,
-                }
-                .fail();
-            }
-
-            if let Some(response) = self.response_stream.next().await {
-                let response = response?;
-                let request_id = response.request_id();
-                if request_id == target_request_id {
-                    // Mark as completed and remove from pending
-                    self.pending_requests.remove(&request_id);
-                    return Ok(response);
-                } else {
-                    // Mark other request as completed
-                    if let Some((_, completed)) = self.pending_requests.get_mut(&request_id) {
-                        *completed = true;
-                    }
-                }
-            } else {
-                return error::StreamEndedSnafu.fail();
-            }
-        }
     }
 
     /// Convert rows to Arrow RecordBatch using cached schema
@@ -400,15 +468,7 @@ impl BulkStreamWriter {
 
                 // String and Binary types
                 ColumnDataType::Binary => {
-                    // Convert binary data to Arrow Binary array using builder
-                    let mut builder = BinaryBuilder::new();
-                    for row in rows {
-                        match row.get_binary(col_idx) {
-                            Some(data) => builder.append_value(&data),
-                            None => builder.append_null(),
-                        }
-                    }
-                    Arc::new(builder.finish()) as Arc<dyn Array>
+                    build_binary_array!(rows, col_idx, get_binary)
                 }
                 ColumnDataType::String => {
                     build_primitive_array!(rows, col_idx, get_string, arrow_array::StringArray)
@@ -476,26 +536,12 @@ impl BulkStreamWriter {
 
                 // Decimal type (stored as binary)
                 ColumnDataType::Decimal128 => {
-                    let mut builder = BinaryBuilder::new();
-                    for row in rows {
-                        match row.get_decimal128(col_idx) {
-                            Some(data) => builder.append_value(&data),
-                            None => builder.append_null(),
-                        }
-                    }
-                    Arc::new(builder.finish()) as Arc<dyn Array>
+                    build_binary_array!(rows, col_idx, get_decimal128)
                 }
 
                 // JSON type (stored as binary per Java implementation)
                 ColumnDataType::Json => {
-                    let mut builder = BinaryBuilder::new();
-                    for row in rows {
-                        match row.get_json(col_idx) {
-                            Some(json_str) => builder.append_value(json_str.as_bytes()),
-                            None => builder.append_null(),
-                        }
-                    }
-                    Arc::new(builder.finish()) as Arc<dyn Array>
+                    build_json_array!(rows, col_idx)
                 }
 
                 // Unsupported types - these should not be used
@@ -512,10 +558,29 @@ impl BulkStreamWriter {
     }
 
     /// Finish the bulk write operation and close the connection
-    pub async fn finish(mut self) -> Result<()> {
-        // Wait for all pending requests to complete
-        while !self.pending_requests.is_empty() {
-            self.process_pending_responses().await?;
+    pub async fn finish(self) -> Result<()> {
+        let _responses = self.finish_with_responses().await?;
+        // Discard responses since finish() doesn't return them
+        Ok(())
+    }
+
+    /// Finish the bulk write operation and return all responses
+    pub async fn finish_with_responses(mut self) -> Result<Vec<DoPutResponse>> {
+        let mut all_responses = Vec::new();
+
+        // First, collect any already cached responses
+        let completed_responses = std::mem::take(&mut self.completed_responses);
+        for (request_id, response) in completed_responses {
+            // Remove from pending_requests if it exists, but collect the response regardless
+            // This handles both normal cases and orphaned responses
+            self.pending_requests.remove(&request_id);
+            all_responses.push(response);
+        }
+
+        // Then wait for any remaining pending requests
+        if !self.pending_requests.is_empty() {
+            let remaining_responses = self.wait_for_all_pending().await?;
+            all_responses.extend(remaining_responses);
         }
 
         // Close the sender to signal the end of the stream
@@ -524,7 +589,7 @@ impl BulkStreamWriter {
             .await
             .map_err(|_| error::CloseSenderSnafu.build())?;
 
-        Ok(())
+        Ok(all_responses)
     }
 }
 

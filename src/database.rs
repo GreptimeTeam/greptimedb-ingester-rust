@@ -180,13 +180,12 @@ impl Database {
     }
 
     fn put_hints(metadata: &mut MetadataMap, hints: &[(&str, &str)]) -> Result<()> {
-        let Some(value) = hints
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .reduce(|a, b| format!("{},{}", a, b))
-        else {
+        if hints.is_empty() {
             return Ok(());
-        };
+        }
+
+        let hint_strings: Vec<String> = hints.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+        let value = hint_strings.join(",");
 
         let key = AsciiMetadataKey::from_static("x-greptime-hints");
         let value =
