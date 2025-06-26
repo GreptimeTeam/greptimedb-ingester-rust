@@ -92,11 +92,11 @@ main() {
     # Option 1: Run specific integration tests
     if [ "$1" = "specific" ]; then
         echo_info "Running specific test: $2"
-        cargo test --test integration_test -- "$2"
+        cargo test --test integration --features integration-tests -- "$2"
     # Option 2: Run all integration tests
     else
         echo_info "Running all integration tests..."
-        cargo test --test integration_test
+        cargo test --test integration --features integration-tests
     fi
     
     local test_result=$?

@@ -65,7 +65,7 @@ jobs:
       run: cargo test --lib
 
     - name: Run integration tests
-      run: cargo test --test integration_test --verbose
+      run: cargo test --test integration --features integration-tests --verbose
       env:
         RUST_LOG: info
 
