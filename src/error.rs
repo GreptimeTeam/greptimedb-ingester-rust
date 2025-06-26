@@ -148,6 +148,18 @@ pub enum Error {
         #[snafu(implicit)]
         location: Location,
     },
+
+    #[snafu(display(
+        "Request timeout after {}ms for request IDs: {:?}",
+        timeout_ms,
+        request_ids
+    ))]
+    RequestTimeout {
+        request_ids: Vec<i64>,
+        timeout_ms: u64,
+        #[snafu(implicit)]
+        location: Location,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

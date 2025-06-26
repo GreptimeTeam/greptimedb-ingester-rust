@@ -17,8 +17,10 @@
 //! This module provides a user-friendly API for bulk inserting data into GreptimeDB,
 //! abstracting away the low-level Arrow Flight details.
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use arrow_array::builder::BinaryBuilder;
 use arrow_array::{Array, RecordBatch};
@@ -77,6 +79,7 @@ impl BulkInserter {
 pub struct BulkWriteOptions {
     pub compression: bool,
     pub timeout_ms: u64,
+    pub parallelism: usize,
 }
 
 impl Default for BulkWriteOptions {
@@ -84,6 +87,7 @@ impl Default for BulkWriteOptions {
         Self {
             compression: true,
             timeout_ms: 30000,
+            parallelism: 1,
         }
     }
 }
@@ -100,6 +104,12 @@ impl BulkWriteOptions {
         self.timeout_ms = timeout_ms;
         self
     }
+
+    /// Set parallelism for concurrent requests
+    pub fn with_parallelism(mut self, parallelism: usize) -> Self {
+        self.parallelism = parallelism;
+        self
+    }
 }
 
 /// High-performance bulk stream writer that maintains a persistent connection
@@ -111,9 +121,14 @@ pub struct BulkStreamWriter {
     table_schema: Vec<Column>,
     // Cache the Arrow schema to avoid recreating it for each batch
     arrow_schema: Arc<Schema>,
-    batch_counter: i64,
+    request_id_generator: i64,
     encoder: FlightEncoder,
     schema_sent: bool,
+    // Parallel processing fields
+    parallelism: usize,
+    timeout_ms: u64,
+    // Track pending requests: request_id -> (sent_time, completed)
+    pending_requests: HashMap<i64, (Instant, bool)>,
 }
 
 impl BulkStreamWriter {
@@ -154,9 +169,12 @@ impl BulkStreamWriter {
             table_name: table_name.to_string(),
             table_schema,
             arrow_schema,
-            batch_counter: 0,
+            request_id_generator: 0,
             encoder,
             schema_sent: false,
+            parallelism: options.parallelism,
+            timeout_ms: options.timeout_ms,
+            pending_requests: HashMap::new(),
         })
     }
 
@@ -168,7 +186,7 @@ impl BulkStreamWriter {
 
         let record_batch = self.rows_to_record_batch(&rows)?;
         let total_rows = record_batch.num_rows() as u64;
-        let _response = self.write_record_batch(record_batch).await?;
+        let _response = self.write_record_batch_parallel(record_batch).await?;
 
         Ok(total_rows)
     }
@@ -182,13 +200,13 @@ impl BulkStreamWriter {
 
         let record_batch = self.rows_to_record_batch(&rows)?;
         let total_rows = record_batch.num_rows() as u64;
-        let response = self.write_record_batch(record_batch).await?;
+        let response = self.write_record_batch_parallel(record_batch).await?;
 
         Ok((total_rows, response))
     }
 
-    /// Write a record batch to the stream (internal method)
-    async fn write_record_batch(
+    /// Write a record batch to the stream with parallel processing
+    async fn write_record_batch_parallel(
         &mut self,
         batch: RecordBatch,
     ) -> Result<crate::flight::do_put::DoPutResponse> {
@@ -200,20 +218,17 @@ impl BulkStreamWriter {
                 .context(error::SerializeMetadataSnafu)?
                 .into();
 
-            // First message in "DoPut" stream should carry table name in flight descriptor
             schema_data.flight_descriptor = Some(FlightDescriptor {
                 r#type: arrow_flight::flight_descriptor::DescriptorType::Path as i32,
                 path: vec![self.table_name.clone()],
                 ..Default::default()
             });
 
-            // Send schema immediately
             self.sender
                 .send(schema_data)
                 .await
                 .map_err(|_| error::SendDataSnafu.build())?;
 
-            // Wait for schema response and discard it
             if let Some(response) = self.response_stream.next().await {
                 let _schema_response = response?;
             }
@@ -221,26 +236,107 @@ impl BulkStreamWriter {
             self.schema_sent = true;
         }
 
-        // Encode and send the record batch immediately
-        self.batch_counter += 1;
+        // Wait for available slot if we've reached parallelism limit
+        while self.pending_requests.len() >= self.parallelism {
+            self.process_pending_responses().await?;
+        }
+
+        // Send the request
+        self.request_id_generator += 1;
+        let request_id = self.request_id_generator;
         let message = FlightMessage::RecordBatch(batch);
         let mut data = self.encoder.encode(message);
-        let metadata = DoPutMetadata::new(self.batch_counter);
+        let metadata = DoPutMetadata::new(request_id);
         data.app_metadata = serde_json::to_vec(&metadata)
             .context(error::SerializeMetadataSnafu)?
             .into();
 
-        // Send data immediately to avoid memory accumulation
         self.sender
             .send(data)
             .await
             .map_err(|_| error::SendDataSnafu.build())?;
 
-        // Wait for and return the corresponding response
+        // Track this request
+        self.pending_requests
+            .insert(request_id, (Instant::now(), false));
+
+        // Wait for this specific request's response
+        self.wait_for_response(request_id).await
+    }
+
+    /// Process pending responses and handle timeouts
+    async fn process_pending_responses(&mut self) -> Result<()> {
+        let timeout_duration = Duration::from_millis(self.timeout_ms);
+        let now = Instant::now();
+
+        // Check for timeouts
+        let timed_out_requests: Vec<i64> = self
+            .pending_requests
+            .iter()
+            .filter(|(_, (sent_time, completed))| {
+                !completed && now.duration_since(*sent_time) > timeout_duration
+            })
+            .map(|(id, _)| *id)
+            .collect();
+
+        if !timed_out_requests.is_empty() {
+            return error::RequestTimeoutSnafu {
+                request_ids: timed_out_requests,
+                timeout_ms: self.timeout_ms,
+            }
+            .fail();
+        }
+
+        // Process one response to make room for new requests
         if let Some(response) = self.response_stream.next().await {
-            response
-        } else {
-            error::StreamEndedSnafu.fail()
+            let response = response?;
+            let request_id = response.request_id();
+            if let Some((_, completed)) = self.pending_requests.get_mut(&request_id) {
+                *completed = true;
+            }
+        }
+
+        // Remove completed requests
+        self.pending_requests
+            .retain(|_, (_, completed)| !*completed);
+
+        Ok(())
+    }
+
+    /// Wait for a specific request's response by request_id
+    async fn wait_for_response(
+        &mut self,
+        target_request_id: i64,
+    ) -> Result<crate::flight::do_put::DoPutResponse> {
+        let timeout_duration = Duration::from_millis(self.timeout_ms);
+        let start_time = Instant::now();
+
+        loop {
+            // Check timeout
+            if start_time.elapsed() > timeout_duration {
+                return error::RequestTimeoutSnafu {
+                    request_ids: vec![target_request_id],
+                    timeout_ms: self.timeout_ms,
+                }
+                .fail();
+            }
+
+            if let Some(response) = self.response_stream.next().await {
+                let response = response?;
+                let request_id = response.request_id();
+                if request_id == target_request_id {
+                    // Mark as completed and remove from pending
+                    self.pending_requests.remove(&request_id);
+                    return Ok(response);
+                } else {
+                    // Mark other request as completed
+                    if let Some((_, completed)) = self.pending_requests.get_mut(&request_id) {
+                        *completed = true;
+                    }
+                }
+            } else {
+                return error::StreamEndedSnafu.fail();
+            }
         }
     }
 
@@ -417,6 +513,11 @@ impl BulkStreamWriter {
 
     /// Finish the bulk write operation and close the connection
     pub async fn finish(mut self) -> Result<()> {
+        // Wait for all pending requests to complete
+        while !self.pending_requests.is_empty() {
+            self.process_pending_responses().await?;
+        }
+
         // Close the sender to signal the end of the stream
         self.sender
             .close()
