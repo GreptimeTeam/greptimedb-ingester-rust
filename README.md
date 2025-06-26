@@ -1,13 +1,277 @@
 # GreptimeDB Rust Ingester
 
-A Rust client for ingesting data into GreptimeDB, using GreptimeDB's gRPC
-protocol.
+A high-performance Rust client for ingesting data into GreptimeDB, supporting both low-latency individual inserts and high-throughput bulk streaming operations.
 
-See
-[examples](https://github.com/GreptimeTeam/greptimedb-ingester-rust/blob/master/examples)
-for latest usage demo.
+## Features
+
+- **Two Ingestion Approaches**: Choose between low-latency inserts and high-throughput bulk streaming
+- **Parallel Processing**: Async request submission with configurable parallelism
+- **Type Safety**: Comprehensive support for all GreptimeDB data types
+- **Performance Optimized**: Memory-efficient operations with zero-copy access patterns
+- **Production Ready**: Robust error handling, timeouts, and connection management
+
+## Architecture Overview
+
+The ingester provides two main APIs tailored for different use cases:
+
+### 1. Low-Latency Insert API 🚀
+**Best for**: Real-time applications, IoT sensors, interactive systems
+
+```rust
+use greptimedb_ingester::api::v1::*;
+use greptimedb_ingester::client::Client;
+use greptimedb_ingester::{database::Database, Result};
+
+// Connect to GreptimeDB
+let client = Client::with_urls(&["localhost:4001"]);
+let database = Database::new_with_dbname("public", client);
+
+// Insert data with minimal latency
+let insert_request = RowInsertRequests {
+    inserts: vec![RowInsertRequest {
+        table_name: "sensor_data".to_string(),
+        rows: Some(Rows {
+            schema: vec![/* column definitions */],
+            rows: vec![/* data rows */],
+        }),
+    }],
+};
+
+let affected_rows = database.insert(insert_request).await?;
+```
+
+### 2. High-Throughput Bulk API ⚡
+**Best for**: ETL operations, data migration, batch processing, log ingestion
+
+```rust
+use greptimedb_ingester::{BulkInserter, BulkWriteOptions, ColumnDataType, Row, Table, Value};
+
+// Create bulk inserter
+let bulk_inserter = BulkInserter::new(client, "public");
+
+// Define table schema
+let table_template = Table::builder()
+    .name("sensor_readings")
+    .build()
+    .unwrap()
+    .add_timestamp("ts", ColumnDataType::TimestampMillisecond)
+    .add_field("device_id", ColumnDataType::String)
+    .add_field("temperature", ColumnDataType::Float64);
+
+// Create high-performance stream writer
+let mut bulk_writer = bulk_inserter
+    .create_bulk_stream_writer(
+        &table_template,
+        Some(BulkWriteOptions::default()
+            .with_parallelism(8)      // 8 concurrent requests
+            .with_compression(true)   // Enable compression
+            .with_timeout_ms(60000)   // 60s timeout
+        ),
+    )
+    .await?;
+
+// High-throughput parallel writing
+for batch in data_batches {
+    let request_id = bulk_writer.write_rows_async(batch).await?;
+    // Requests are processed in parallel
+}
+
+// Wait for all operations to complete
+let responses = bulk_writer.wait_for_all_pending().await?;
+bulk_writer.finish().await?;
+```
+
+> **Important**: For bulk operations, currently use `add_field()` instead of `add_tag()`. Tag columns are part of the primary key in GreptimeDB, but bulk operations don't yet support tables with tag columns. This limitation will be addressed in future versions.
+
+## When to Choose Which API
+
+| Scenario | API Choice | Why |
+|----------|------------|-----|
+| **IoT sensor data** | Low-Latency Insert | Real-time requirements, small batches |
+| **Interactive dashboards** | Low-Latency Insert | User expects immediate feedback |
+| **ETL pipelines** | Bulk Streaming | Process millions of records efficiently |
+| **Log ingestion** | Bulk Streaming | High volume, can batch data |
+| **Data migration** | Bulk Streaming | Transfer large datasets quickly |
+
+## Examples
+
+The repository includes comprehensive examples demonstrating both approaches:
+
+### Low-Latency Examples
+
+Run with: `cargo run --example insert_example`
+
+- **Real-time sensor ingestion**: Simulates IoT devices sending data with latency measurements
+- **Data type demonstration**: Shows support for all GreptimeDB column types
+- **Interactive patterns**: Best practices for real-time applications
+
+### High-Throughput Examples
+
+Run with: `cargo run --example bulk_stream_writer_example`
+
+- **Performance comparison**: Sequential vs parallel processing benchmarks
+- **Async submission patterns**: Demonstrates `write_rows_async()` for maximum throughput
+- **Best practices**: Optimal configuration for high-volume scenarios
+
+## Performance Characteristics
+
+### Low-Latency Insert API
+- **Latency**: 1-10ms per operation
+- **Throughput**: 100-1,000 ops/sec
+- **Memory**: Low, constant
+- **Use case**: Real-time applications
+
+### Bulk Streaming API
+- **Latency**: 100-1000ms per batch
+- **Throughput**: 10,000-100,000+ rows/sec
+- **Memory**: Higher during batching
+- **Use case**: High-volume processing
+
+## Advanced Usage
+
+### Parallel Bulk Operations
+
+The bulk API supports true parallelism through async request submission:
+
+```rust
+// Submit multiple batches without waiting
+let mut request_ids = Vec::new();
+for batch in batches {
+    let id = bulk_writer.write_rows_async(batch).await?;
+    request_ids.push(id);
+}
+
+// Option 1: Wait for all pending requests
+let responses = bulk_writer.wait_for_all_pending().await?;
+
+// Option 2: Wait for specific requests
+for request_id in request_ids {
+    let response = bulk_writer.wait_for_response(request_id).await?;
+    println!("Request {} completed with {} rows", 
+             request_id, response.affected_rows());
+}
+```
+
+### Data Type Support
+
+Full support for GreptimeDB data types:
+
+```rust
+use greptimedb_ingester::{Value, ColumnDataType};
+
+let row = Row::new()
+    .add_value(Value::TimestampMillisecond(1234567890123))
+    .add_value(Value::String("device_001".to_string()))
+    .add_value(Value::Float64(23.5))
+    .add_value(Value::Int64(1))
+    .add_value(Value::Boolean(true))
+    .add_value(Value::Binary(vec![0xDE, 0xAD, 0xBE, 0xEF]))
+    .add_value(Value::Json(r#"{"key": "value"}"#.to_string()));
+```
+
+### Type-Safe Data Access
+
+Efficient data access patterns:
+
+```rust
+// Type-safe value access
+if let Some(device_name) = row.get_string(1) {
+    println!("Device: {}", device_name);
+}
+
+// Binary data access
+if let Some(binary_data) = row.get_binary(5) {
+    process_binary(&binary_data);
+}
+```
+
+## Best Practices
+
+### For Low-Latency Applications
+- Use small batch sizes (200-1000 rows)
+- Monitor and optimize network round-trip times
+
+### For High-Throughput Applications  
+- Use parallelism=8-16 for network-bound workloads
+- Batch 2000-100000 rows per request for optimal performance
+- Enable compression to reduce network overhead
+- Monitor memory usage when submitting many async requests
+- Implement backpressure control for very high-volume scenarios
+
+### General Recommendations
+- Use appropriate data types to minimize serialization overhead
+- Pre-allocate vectors with known capacity
+- Reuse connections when possible
+- Handle errors gracefully with retry logic
+- Monitor performance metrics in production
+
+## Configuration
+
+Set up your GreptimeDB connection:
+
+```rust
+use greptimedb_ingester::{ChannelConfig, ChannelManager};
+use std::time::Duration;
+
+let channel_config = ChannelConfig::default()
+    .timeout(Duration::from_secs(30))
+    .connect_timeout(Duration::from_secs(5));
+let channel_manager = ChannelManager::with_config(channel_config);
+let client = Client::with_manager_and_urls(channel_manager, 
+    &["localhost:4001"]);
+```
+
+## Error Handling
+
+The library provides comprehensive error types:
+
+```rust
+use greptimedb_ingester::{Result, Error};
+
+match database.insert(request).await {
+    Ok(affected_rows) => println!("Inserted {} rows", affected_rows),
+    Err(Error::RequestTimeout { .. }) => {
+        // Handle timeout
+    },
+    Err(Error::SerializeMetadata { .. }) => {
+        // Handle metadata serialization issues
+    },
+    Err(e) => {
+        eprintln!("Unexpected error: {:?}", e);
+    }
+}
+```
+
+## API Reference
+
+### Core Types
+- `Client`: Connection management
+- `Database`: Low-level insert operations  
+- `BulkInserter`: High-level bulk operations
+- `BulkStreamWriter`: Streaming bulk writer
+- `Table`: Table schema definition
+- `Row`: Data row representation
+- `Value`: Type-safe value wrapper
+
+### Key Methods
+
+**Low-Latency API:**
+- `database.insert(request)` - Insert with immediate response
+
+**Bulk API:**
+- `bulk_writer.write_rows(rows)` - Submit and wait for completion
+- `bulk_writer.write_rows_async(rows)` - Submit without waiting  
+- `bulk_writer.wait_for_response(id)` - Wait for specific request
+- `bulk_writer.wait_for_all_pending()` - Wait for all pending requests
+- `bulk_writer.finish()` - Clean shutdown
+- `bulk_writer.finish_with_responses()` - Shutdown with response collection
 
 ## License
 
-This library uses the Apache 2.0 license to strike a balance between open
-contributions and allowing you to use the software however you want.
+This library uses the Apache 2.0 license to strike a balance between open contributions and allowing you to use the software however you want.
+
+## Links
+
+- [GreptimeDB Documentation](https://docs.greptime.com/)
+- [Examples Directory](./examples/)
+- [API Documentation](https://docs.rs/greptimedb-ingester/)

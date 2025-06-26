@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Example demonstrating how to leverage BulkStreamWriter's internal parallelism
+//! High-throughput bulk streaming example using BulkStreamWriter
+//! Best for: High-volume data ingestion, batch processing, ETL scenarios
+//! Demonstrates: Parallel request submission, async processing, performance optimization
 
 mod config_utils;
 use config_utils::DbConfig;
@@ -24,140 +26,153 @@ use greptimedb_ingester::{
     BulkInserter, BulkWriteOptions, ColumnDataType, Result, Row, Table, Value,
 };
 
+/// Generate realistic time-series data for bulk ingestion testing
+/// Simulates IoT sensor readings with device IDs, temperatures, and status codes
 fn create_test_rows(batch_id: usize, rows_per_batch: usize) -> Vec<Row> {
-    // Get current timestamp
     let current_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64;
 
-    let mut rows = Vec::new();
+    let mut rows = Vec::with_capacity(rows_per_batch);
     for i in 0..rows_per_batch {
         let global_idx = batch_id * rows_per_batch + i;
-        let device_id = format!("device_{}", global_idx % 50); // 50 different devices
-        let value = (global_idx as f64) * 0.5 + 20.0; // temperature-like values
-        let timestamp = current_time + (global_idx as i64 * 100); // 100ms intervals
-        let status = global_idx as i64;
+        let timestamp = current_time + (global_idx as i64 * 50); // 50ms intervals
+        let device_id = format!("sensor_{:06}", global_idx % 1000); // 1000 unique sensors
+        let temperature = 18.0 + (global_idx as f64 * 0.03) % 25.0; // 18-43°C range
+        let status = if global_idx % 100 == 0 { 0 } else { 1 }; // 1% error rate
 
-        let row = Row::new()
-            .add_value(Value::Timestamp(timestamp))
-            .add_value(device_id.into())
-            .add_value(value.into())
-            .add_value(status.into());
-
-        rows.push(row);
+        // Row values must match table_template column order exactly:
+        // Index 0: ts (timestamp), Index 1: sensor_id, Index 2: temperature, Index 3: sensor_status
+        rows.push(Row::new().add_values(vec![
+            Value::Timestamp(timestamp), // Index 0: ts
+            Value::String(device_id),    // Index 1: sensor_id
+            Value::Float64(temperature), // Index 2: temperature
+            Value::Int64(status),        // Index 3: sensor_status
+        ]));
     }
 
     rows
 }
 
+/// Demonstrates traditional sequential bulk writing (baseline performance)
+/// Each batch waits for completion before submitting the next batch
 async fn run_sequential_writes() -> Result<Duration> {
     let config = DbConfig::from_env();
     let urls = vec![config.endpoint.clone()];
-
     let grpc_client = Client::with_urls(&urls);
     let bulk_inserter = BulkInserter::new(grpc_client, &config.database);
 
-    // Create a table template to define schema
+    // Define time-series table schema for sensor data
+    // IMPORTANT: Row data must match the exact column order defined in table_template
     let table_template = Table::builder()
-        .name("sensor_data_sequential")
+        .name("high_throughput_sequential")
         .build()
         .unwrap()
-        .add_timestamp("ts", ColumnDataType::TimestampMillisecond)
-        .add_field("device_id", ColumnDataType::String)
-        .add_field("avalue", ColumnDataType::Float64)
-        .add_field("astatus", ColumnDataType::Int64);
+        .add_timestamp("ts", ColumnDataType::TimestampMillisecond) // Index 0
+        .add_field("sensor_id", ColumnDataType::String) // Index 1
+        .add_field("temperature", ColumnDataType::Float64) // Index 2
+        .add_field("sensor_status", ColumnDataType::Int64); // Index 3
 
-    // Create BulkStreamWriter with low parallelism for sequential comparison
     let mut bulk_writer = bulk_inserter
         .create_bulk_stream_writer(
             &table_template,
             Some(
                 BulkWriteOptions::default()
                     .with_compression(true)
-                    .with_parallelism(1) // Low parallelism for sequential baseline
+                    .with_parallelism(1) // Single in-flight request
                     .with_timeout_ms(30000),
             ),
         )
         .await?;
 
     let start_time = Instant::now();
-    let batch_count = 50; // Same number of batches for fair comparison
-    let rows_per_batch = 500; // Same batch size
+    let batch_count = 100;
+    let rows_per_batch = 1000;
     let mut total_rows = 0usize;
 
     println!(
-        "  Writing {} batches of {} rows each with parallelism=1",
-        batch_count, rows_per_batch
+        "  Sequential processing: {} batches × {} rows = {} total rows",
+        batch_count,
+        rows_per_batch,
+        batch_count * rows_per_batch
     );
 
-    // Sequential writes - one batch at a time
     for batch_num in 0..batch_count {
         let rows = create_test_rows(batch_num, rows_per_batch);
         let response = bulk_writer.write_rows(rows).await?;
         total_rows += response.affected_rows();
 
-        // Show progress every 10 batches
-        if (batch_num + 1) % 10 == 0 {
-            println!("  Completed {} batches", batch_num + 1);
+        if (batch_num + 1) % 20 == 0 {
+            let elapsed = start_time.elapsed();
+            let rate = total_rows as f64 / elapsed.as_secs_f64();
+            println!(
+                "  Progress: {}/{} batches ({:.0} rows/sec)",
+                batch_num + 1,
+                batch_count,
+                rate
+            );
         }
     }
 
-    // Finish and close the connection
     bulk_writer.finish().await?;
-
     let duration = start_time.elapsed();
+    let throughput = total_rows as f64 / duration.as_secs_f64();
+
     println!(
-        "  Sequential: {} rows in {:?} ({:.2} rows/sec)",
+        "  ✓ Sequential: {} rows in {:.2}s ({:.0} rows/sec)",
         total_rows,
-        duration,
-        total_rows as f64 / duration.as_secs_f64()
+        duration.as_secs_f64(),
+        throughput
     );
 
     Ok(duration)
 }
 
-async fn run_truly_parallel_writes() -> Result<Duration> {
+/// Demonstrates high-throughput parallel bulk writing
+/// Multiple requests can be in-flight simultaneously, maximizing network utilization
+async fn run_parallel_writes() -> Result<Duration> {
     let config = DbConfig::from_env();
     let urls = vec![config.endpoint.clone()];
-
     let grpc_client = Client::with_urls(&urls);
     let bulk_inserter = BulkInserter::new(grpc_client, &config.database);
 
-    // Create a table template to define schema
+    // IMPORTANT: Row data must match the exact column order defined in table_template
     let table_template = Table::builder()
-        .name("sensor_data_parallel")
+        .name("high_throughput_parallel")
         .build()
         .unwrap()
-        .add_timestamp("ts", ColumnDataType::TimestampMillisecond)
-        .add_field("device_id", ColumnDataType::String)
-        .add_field("avalue", ColumnDataType::Float64)
-        .add_field("astatus", ColumnDataType::Int64);
+        .add_timestamp("ts", ColumnDataType::TimestampMillisecond) // Index 0
+        .add_field("sensor_id", ColumnDataType::String) // Index 1
+        .add_field("temperature", ColumnDataType::Float64) // Index 2
+        .add_field("sensor_status", ColumnDataType::Int64); // Index 3
 
-    // Create BulkStreamWriter with high parallelism
     let mut bulk_writer = bulk_inserter
         .create_bulk_stream_writer(
             &table_template,
             Some(
                 BulkWriteOptions::default()
                     .with_compression(true)
-                    .with_parallelism(8) // Allow 8 concurrent in-flight requests
-                    .with_timeout_ms(30000),
+                    .with_parallelism(16) // High concurrency for maximum throughput
+                    .with_timeout_ms(60000),
             ),
         )
         .await?;
 
     let start_time = Instant::now();
-    let batch_count = 50;
-    let rows_per_batch = 500;
+    let batch_count = 100;
+    let rows_per_batch = 1000;
 
     println!(
-        "  Submitting {} batches asynchronously with parallelism=8",
-        batch_count
+        "  Parallel processing: {} batches × {} rows = {} total rows",
+        batch_count,
+        rows_per_batch,
+        batch_count * rows_per_batch
     );
+    println!("  Using parallelism=16 for maximum throughput");
 
-    // Phase 1: Submit all requests without waiting (true parallelism!)
-    let mut request_ids = Vec::new();
+    // Phase 1: Async submission - submit all batches without waiting
+    let mut request_ids = Vec::with_capacity(batch_count);
     let submit_start = Instant::now();
 
     for batch_num in 0..batch_count {
@@ -165,110 +180,131 @@ async fn run_truly_parallel_writes() -> Result<Duration> {
         match bulk_writer.write_rows_async(rows).await {
             Ok(request_id) => {
                 request_ids.push(request_id);
-                if (batch_num + 1) % 10 == 0 {
-                    println!("  Submitted {} batches", batch_num + 1);
+                if (batch_num + 1) % 25 == 0 {
+                    println!("  Submitted: {}/{} batches", batch_num + 1, batch_count);
                 }
             }
-            Err(e) => println!("  Submit error: {:?}", e),
+            Err(e) => eprintln!("  Submission error for batch {}: {:?}", batch_num, e),
         }
     }
 
     let submit_duration = submit_start.elapsed();
     println!(
-        "  All {} requests submitted in {:?}",
+        "  ✓ All {} batches submitted in {:.3}s ({:.0} batches/sec)",
         request_ids.len(),
-        submit_duration
+        submit_duration.as_secs_f64(),
+        request_ids.len() as f64 / submit_duration.as_secs_f64()
     );
 
-    // Phase 2: Wait for all responses
-    println!("  Waiting for all responses...");
+    // Phase 2: Wait for completion - collect all responses
+    println!("  Waiting for parallel processing to complete...");
+    let wait_start = Instant::now();
     let responses = bulk_writer.wait_for_all_pending().await?;
-
-    // Alternative: You could also wait for individual responses:
-    // for request_id in request_ids {
-    //     let response = bulk_writer.wait_for_response(request_id).await?;
-    //     println!("Request {} completed with {} rows", request_id, response.affected_rows());
-    // }
+    let wait_duration = wait_start.elapsed();
 
     let total_rows: usize = responses.iter().map(|r| r.affected_rows()).sum();
+    let success_count = responses.len();
 
-    // Finish and close the connection - finish_with_responses ensures we get ALL responses
-    let all_final_responses = bulk_writer.finish_with_responses().await?;
-    println!(
-        "  Final cleanup collected {} additional responses",
-        all_final_responses.len().saturating_sub(responses.len())
-    );
+    // Clean shutdown - ensure no responses are lost
+    bulk_writer.finish().await?;
 
-    let duration = start_time.elapsed();
+    let total_duration = start_time.elapsed();
+    let throughput = total_rows as f64 / total_duration.as_secs_f64();
+    let avg_latency = wait_duration.as_millis() as f64 / success_count as f64;
+
     println!(
-        "  Truly parallel: {} rows in {:?} ({:.2} rows/sec)",
+        "  ✓ Parallel: {} rows in {:.2}s ({:.0} rows/sec)",
         total_rows,
-        duration,
-        total_rows as f64 / duration.as_secs_f64()
+        total_duration.as_secs_f64(),
+        throughput
     );
-    println!("  - Submit phase: {:?}", submit_duration);
-    println!("  - Processing phase: {:?}", duration - submit_duration);
+    println!("    - Submission: {:.3}s", submit_duration.as_secs_f64());
+    println!(
+        "    - Processing: {:.3}s (avg {:.1}ms/batch)",
+        wait_duration.as_secs_f64(),
+        avg_latency
+    );
+    println!(
+        "    - Success rate: {}/{} batches",
+        success_count, batch_count
+    );
 
-    Ok(duration)
+    Ok(total_duration)
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("=== BulkStreamWriter: Internal Parallelism Demonstration ===\n");
+    println!("=== High-Throughput Bulk Stream Writer Example ===");
+    println!("Use case: ETL, data migration, batch processing, log ingestion");
+    println!("When to use: High-volume data, can tolerate higher latency for better throughput\n");
 
-    // Test sequential writes (one write_rows at a time)
-    println!("Testing sequential writes...");
+    // Baseline: traditional sequential approach
+    println!("[1/2] Sequential Baseline (traditional approach)");
     let sequential_duration = match run_sequential_writes().await {
         Ok(duration) => Some(duration),
         Err(e) => {
-            println!("Sequential write error: {:?}", e);
+            eprintln!("Sequential write error: {:?}", e);
             None
         }
     };
 
-    // Small delay between tests
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
     println!();
 
-    // Test truly parallel writes (using async submission)
-    println!("Testing truly parallel writes...");
-    let concurrent_duration = match run_truly_parallel_writes().await {
+    // Optimized: parallel submission approach
+    println!("[2/2] Parallel Optimization (async submission)");
+    let parallel_duration = match run_parallel_writes().await {
         Ok(duration) => Some(duration),
         Err(e) => {
-            println!("High-parallelism write error: {:?}", e);
+            eprintln!("Parallel write error: {:?}", e);
             None
         }
     };
 
     println!();
+    println!("=== Performance Comparison ===");
 
-    // Show performance comparison
-    println!("=== Performance Summary ===");
-    match (sequential_duration, concurrent_duration) {
-        (Some(seq_duration), Some(conc_duration)) => {
-            println!("Sequential writes (parallelism=1): {:?}", seq_duration);
-            println!("Truly parallel writes (parallelism=8): {:?}", conc_duration);
+    match (sequential_duration, parallel_duration) {
+        (Some(seq_dur), Some(par_dur)) => {
+            let speedup = seq_dur.as_secs_f64() / par_dur.as_secs_f64();
+            println!("Sequential approach: {:.2}s", seq_dur.as_secs_f64());
+            println!("Parallel approach:   {:.2}s", par_dur.as_secs_f64());
 
-            let speedup = seq_duration.as_secs_f64() / conc_duration.as_secs_f64();
             if speedup > 1.0 {
-                println!("Truly parallel writes are {:.2}x faster", speedup);
+                println!("⚡ Speedup: {:.1}x faster with parallel approach", speedup);
             } else {
-                println!("Sequential writes are {:.2}x faster", 1.0 / speedup);
+                println!(
+                    "⚠️  Sequential was {:.1}x faster (network may be bottleneck)",
+                    1.0 / speedup
+                );
             }
+
+            let efficiency = (speedup - 1.0) / 15.0 * 100.0; // 16 parallel vs 1 = theoretical 16x
+            println!(
+                "📊 Parallel efficiency: {:.0}% of theoretical maximum",
+                efficiency.max(0.0)
+            );
         }
-        _ => {
-            println!("Could not compare due to errors");
-        }
+        _ => println!("❌ Could not complete performance comparison"),
     }
 
-    println!("\nNew Parallel Writing API:");
-    println!("• write_rows(): Synchronous - waits for each request to complete");
-    println!("• write_rows_async(): Asynchronous - submits request and returns request_id");
-    println!("• wait_for_response(request_id): Waits for a specific request to complete");
-    println!("• wait_for_all_pending(): Waits for all submitted requests to complete");
-    println!("• finish(): Closes connection and discards any remaining responses");
-    println!("• finish_with_responses(): Closes connection and returns ALL responses");
-    println!("• This enables true parallelism by overlapping request submission and processing");
+    println!();
+    println!("=== BulkStreamWriter Parallel API ===");
+    println!("🔄 write_rows():           Submit batch and wait for completion (traditional)");
+    println!("⚡ write_rows_async():     Submit batch without waiting, returns request_id");
+    println!("🔍 wait_for_response(id):  Wait for specific request by ID");
+    println!("⏳ wait_for_all_pending(): Wait for all submitted requests");
+    println!("🏁 finish():               Close connection, discard remaining responses");
+    println!("📦 finish_with_responses(): Close connection, return ALL responses");
+
+    println!();
+    println!("=== Best Practices for High Throughput ===");
+    println!("• Use parallelism=8-16 for network-bound workloads");
+    println!("• Batch 500-2000 rows per request for optimal performance");
+    println!("• Use write_rows_async() + wait_for_all_pending() for maximum throughput");
+    println!("• Enable compression for better network utilization");
+    println!("• Monitor memory usage when submitting many async requests");
+    println!("• Consider backpressure control for very high-volume scenarios");
 
     Ok(())
 }

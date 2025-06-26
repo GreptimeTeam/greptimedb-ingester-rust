@@ -46,10 +46,16 @@ macro_rules! build_primitive_array {
     }};
 }
 
-// Macro to generate binary array conversion
+// Macro to generate binary array conversion with better capacity estimation
 macro_rules! build_binary_array {
     ($rows:expr, $col_idx:expr, $getter:ident) => {{
-        let mut builder = BinaryBuilder::with_capacity($rows.len(), $rows.len() * 64);
+        // Estimate better capacity based on data type
+        let estimated_size = match stringify!($getter) {
+            "get_decimal128" => $rows.len() * 16, // Decimal128 is typically 16 bytes
+            "get_json" => $rows.len() * 128,      // JSON varies, use conservative estimate
+            _ => $rows.len() * 64,                // General binary data
+        };
+        let mut builder = BinaryBuilder::with_capacity($rows.len(), estimated_size);
         for row in $rows {
             match row.$getter($col_idx) {
                 Some(data) => builder.append_value(data),
@@ -149,7 +155,7 @@ pub struct BulkStreamWriter {
     table_schema: Vec<Column>,
     // Cache the Arrow schema to avoid recreating it for each batch
     arrow_schema: Arc<Schema>,
-    request_id_generator: i64,
+    next_request_id: i64,
     encoder: FlightEncoder,
     schema_sent: bool,
     // Parallel processing fields
@@ -199,7 +205,7 @@ impl BulkStreamWriter {
             table_name: table_name.to_string(),
             table_schema,
             arrow_schema,
-            request_id_generator: 0,
+            next_request_id: 0,
             encoder,
             schema_sent: false,
             parallelism: options.parallelism,
@@ -348,8 +354,8 @@ impl BulkStreamWriter {
         }
 
         // Send the request
-        self.request_id_generator += 1;
-        let request_id = self.request_id_generator;
+        self.next_request_id += 1;
+        let request_id = self.next_request_id;
         let message = FlightMessage::RecordBatch(batch);
         let mut data = self.encoder.encode(message);
         let metadata = DoPutMetadata::new(request_id);

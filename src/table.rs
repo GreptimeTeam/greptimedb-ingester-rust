@@ -38,6 +38,15 @@ impl Table {
         TableBuilder::default()
     }
 
+    /// Create a new table with pre-allocated capacity for columns and rows
+    pub fn with_capacity(column_capacity: usize, row_capacity: usize) -> Self {
+        Self {
+            name: String::new(),
+            columns: Vec::with_capacity(column_capacity),
+            rows: Vec::with_capacity(row_capacity),
+        }
+    }
+
     /// Add a tag column (for indexing and grouping)
     pub fn add_tag<T: Into<String>>(mut self, name: T, data_type: ColumnDataType) -> Self {
         self.columns.push(Column {
@@ -101,6 +110,18 @@ impl Row {
         Self::default()
     }
 
+    /// Create a new row with pre-allocated capacity
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            values: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// Create a row directly from values (more efficient than chaining add_value calls)
+    pub fn from_values(values: Vec<Value>) -> Self {
+        Self { values }
+    }
+
     /// Add a value to the row
     pub fn add_value(mut self, value: Value) -> Self {
         self.values.push(value);
@@ -109,6 +130,12 @@ impl Row {
 
     /// Add multiple values to the row
     pub fn add_values(mut self, values: Vec<Value>) -> Self {
+        self.values.extend(values);
+        self
+    }
+
+    /// Add multiple values from an iterator
+    pub fn add_values_iter(mut self, values: impl IntoIterator<Item = Value>) -> Self {
         self.values.extend(values);
         self
     }
@@ -344,9 +371,25 @@ impl Value {
         }
     }
 
+    /// Get the binary value as a slice (zero-copy)
+    pub fn as_binary_ref(&self) -> Option<&[u8]> {
+        match self {
+            Value::Binary(v) => Some(v),
+            _ => None,
+        }
+    }
+
     pub fn as_string(&self) -> Option<String> {
         match self {
             Value::String(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    /// Get the string value as a str slice (zero-copy)
+    pub fn as_string_ref(&self) -> Option<&str> {
+        match self {
+            Value::String(v) => Some(v),
             _ => None,
         }
     }
