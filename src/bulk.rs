@@ -179,7 +179,7 @@ impl BulkStreamWriter {
         let encoder = if options.compression {
             FlightEncoder::default()
         } else {
-            FlightEncoder::with_compression_disabled()
+            FlightEncoder::without_compression()
         };
 
         // Pre-compute Arrow schema to avoid recreating it for each batch

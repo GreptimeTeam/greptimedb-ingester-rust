@@ -47,7 +47,7 @@ impl Default for FlightEncoder {
 
 impl FlightEncoder {
     /// Creates new [FlightEncoder] with compression disabled.
-    pub fn with_compression_disabled() -> Self {
+    pub fn without_compression() -> Self {
         let write_options = writer::IpcWriteOptions::default()
             .try_with_compression(None)
             .unwrap();
