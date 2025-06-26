@@ -17,21 +17,6 @@ env:
 jobs:
   integration-tests:
     runs-on: ubuntu-latest
-    
-    services:
-      greptimedb:
-        image: greptime/greptimedb:latest
-        ports:
-          - 4001:4001  # gRPC
-          - 4000:4000  # HTTP
-        options: >-
-          --health-cmd "curl -f http://localhost:4000/health"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-          --health-start-period 30s
-        env:
-          GREPTIMEDB_LOG_LEVEL: info
 
     steps:
     - name: Checkout repository
@@ -47,10 +32,11 @@ jobs:
       with:
         key: integration-tests
 
-    - name: Wait for GreptimeDB to be ready
+    - name: Install Protocol Buffers compiler
       run: |
-        timeout 60 bash -c 'until curl -f http://localhost:4000/health; do sleep 1; done'
-        echo "GreptimeDB is ready!"
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+        protoc --version
 
     - name: Run format check
       run: cargo fmt --all -- --check
@@ -64,11 +50,17 @@ jobs:
     - name: Run unit tests
       run: cargo test --lib
 
+    - name: Start GreptimeDB with Docker Compose
+      run: |
+        docker compose -f docker-compose.test.yml up -d
+        timeout 60 bash -c 'until curl -f http://localhost:4000/health; do sleep 1; done'
+        echo "GreptimeDB is ready!"
+
     - name: Run integration tests
       run: cargo test --test integration --features integration-tests --verbose
       env:
         RUST_LOG: info
 
-    - name: Run integration tests with custom script
-      run: ./scripts/run_integration_tests.sh
-      if: success()
+    - name: Cleanup
+      run: docker compose -f docker-compose.test.yml down -v
+      if: always()
