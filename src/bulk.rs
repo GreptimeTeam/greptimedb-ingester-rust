@@ -599,15 +599,6 @@ impl BulkStreamWriter {
     }
 }
 
-impl Drop for BulkStreamWriter {
-    fn drop(&mut self) {
-        // Close the sender if it's still open to avoid hanging connections
-        if !self.sender.is_closed() {
-            let _ = futures::executor::block_on(self.sender.close());
-        }
-    }
-}
-
 // Helper function to convert ColumnDataType to Arrow DataType
 // Based on GreptimeDB Java implementation - only supports actually implemented types
 fn column_data_type_to_arrow(data_type: ColumnDataType) -> Result<DataType> {
