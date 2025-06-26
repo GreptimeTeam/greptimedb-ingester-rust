@@ -40,6 +40,7 @@ cargo run --example bulk_stream_writer_example
 - Async submission patterns with `write_rows_async()`
 - Optimal configuration for high-volume scenarios
 - Performance metrics and best practices
+- **Important**: Bulk API requires manual table creation (does not auto-create tables)
 - Current limitation: bulk operations work only with field columns (tag support coming)
 
 ## Choosing the Right Example
@@ -181,6 +182,27 @@ Use these metrics to:
 2. Tune configuration parameters
 3. Choose the right approach for your use case
 4. Monitor production performance
+
+## Important Notes for Bulk Operations
+
+**Manual Table Creation Required**: Unlike the insert API which can automatically create tables, the bulk API requires tables to exist beforehand. In production, you should:
+
+1. **Create tables manually using SQL DDL**:
+   ```sql
+   CREATE TABLE sensor_readings (
+       ts TIMESTAMP TIME INDEX,
+       sensor_id STRING,
+       temperature DOUBLE,
+       sensor_status BIGINT
+   );
+   ```
+
+2. **Or use insert API first** (as shown in examples):
+   ```rust
+   // Insert one row to create the table
+   database.insert(initial_request).await?;
+   // Then use bulk API for high-throughput operations
+   ```
 
 ## Column Types in Bulk vs Insert Operations
 

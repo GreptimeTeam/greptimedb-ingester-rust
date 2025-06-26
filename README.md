@@ -45,11 +45,48 @@ let affected_rows = database.insert(insert_request).await?;
 
 ```rust
 use greptimedb_ingester::{BulkInserter, BulkWriteOptions, ColumnDataType, Row, Table, Value};
+use greptimedb_ingester::api::v1::*;
+use greptimedb_ingester::helpers::schema::*;
+use greptimedb_ingester::helpers::values::*;
 
-// Create bulk inserter
+// Step 1: Create table manually (bulk API requires table to exist beforehand)
+// Option A: Use insert API to create table
+let database = Database::new_with_dbname("public", client.clone());
+let init_schema = vec![
+    timestamp("ts", ColumnDataType::TimestampMillisecond),
+    field("device_id", ColumnDataType::String),
+    field("temperature", ColumnDataType::Float64),
+];
+
+let init_request = RowInsertRequests {
+    inserts: vec![RowInsertRequest {
+        table_name: "sensor_readings".to_string(),
+        rows: Some(Rows {
+            schema: init_schema,
+            rows: vec![Row {
+                values: vec![
+                    timestamp_millisecond_value(current_timestamp()),
+                    string_value("init_device".to_string()),
+                    f64_value(0.0),
+                ],
+            }],
+        }),
+    }],
+};
+
+database.insert(init_request).await?; // Table is now created
+
+// Option B: Create table using SQL (if you have SQL access)
+// CREATE TABLE sensor_readings (
+//     ts TIMESTAMP TIME INDEX,
+//     device_id STRING,
+//     temperature DOUBLE
+// );
+
+// Step 2: Now use bulk API for high-throughput operations
 let bulk_inserter = BulkInserter::new(client, "public");
 
-// Define table schema
+// Define table schema (must match the insert API schema above)
 let table_template = Table::builder()
     .name("sensor_readings")
     .build()
@@ -81,7 +118,12 @@ let responses = bulk_writer.wait_for_all_pending().await?;
 bulk_writer.finish().await?;
 ```
 
-> **Important**: For bulk operations, currently use `add_field()` instead of `add_tag()`. Tag columns are part of the primary key in GreptimeDB, but bulk operations don't yet support tables with tag columns. This limitation will be addressed in future versions.
+> **Important**: 
+> 1. **Manual Table Creation Required**: Bulk API does **not** create tables automatically. You must create the table beforehand using either:
+>    - Insert API (which supports auto table creation), or 
+>    - SQL DDL statements (CREATE TABLE)
+> 2. **Schema Matching**: The table template in bulk API must exactly match the existing table schema.
+> 3. **Column Types**: For bulk operations, currently use `add_field()` instead of `add_tag()`. Tag columns are part of the primary key in GreptimeDB, but bulk operations don't yet support tables with tag columns. This limitation will be addressed in future versions.
 
 ## When to Choose Which API
 
@@ -192,6 +234,7 @@ if let Some(binary_data) = row.get_binary(5) {
 - Monitor and optimize network round-trip times
 
 ### For High-Throughput Applications  
+- **Create tables manually first** - bulk API requires existing tables
 - Use parallelism=8-16 for network-bound workloads
 - Batch 2000-100000 rows per request for optimal performance
 - Enable compression to reduce network overhead

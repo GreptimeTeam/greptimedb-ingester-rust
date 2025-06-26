@@ -1,0 +1,74 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [ master, main, develop ]
+  pull_request:
+    branches: [ master, main, develop ]
+  schedule:
+    # Run integration tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+env:
+  CARGO_TERM_COLOR: always
+  GREPTIMEDB_TEST_ENDPOINT: localhost:4001
+  GREPTIMEDB_TEST_DATABASE: public
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    
+    services:
+      greptimedb:
+        image: greptime/greptimedb:latest
+        ports:
+          - 4001:4001  # gRPC
+          - 4000:4000  # HTTP
+        options: >-
+          --health-cmd "curl -f http://localhost:4000/health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 30s
+        env:
+          GREPTIMEDB_LOG_LEVEL: info
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: integration-tests
+
+    - name: Wait for GreptimeDB to be ready
+      run: |
+        timeout 60 bash -c 'until curl -f http://localhost:4000/health; do sleep 1; done'
+        echo "GreptimeDB is ready!"
+
+    - name: Run format check
+      run: cargo fmt --all -- --check
+
+    - name: Run clippy
+      run: cargo clippy --all-targets --all-features -- -D warnings
+
+    - name: Build project
+      run: cargo build --release
+
+    - name: Run unit tests
+      run: cargo test --lib
+
+    - name: Run integration tests
+      run: cargo test --test integration_test --verbose
+      env:
+        RUST_LOG: info
+
+    - name: Run integration tests with custom script
+      run: ./scripts/run_integration_tests.sh
+      if: success()
