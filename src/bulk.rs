@@ -112,7 +112,7 @@ impl BulkInserter {
 #[derive(Debug, Clone)]
 pub struct BulkWriteOptions {
     pub compression: bool,
-    pub timeout_ms: u64,
+    pub timeout: Duration,
     pub parallelism: usize,
 }
 
@@ -120,7 +120,7 @@ impl Default for BulkWriteOptions {
     fn default() -> Self {
         Self {
             compression: true,
-            timeout_ms: 60000,
+            timeout: Duration::from_secs(60),
             parallelism: 1,
         }
     }
@@ -133,9 +133,9 @@ impl BulkWriteOptions {
         self
     }
 
-    /// Set timeout in milliseconds
-    pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
-        self.timeout_ms = timeout_ms;
+    /// Set timeout duration
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
         self
     }
 
@@ -160,7 +160,7 @@ pub struct BulkStreamWriter {
     schema_sent: bool,
     // Parallel processing fields
     parallelism: usize,
-    timeout_ms: u64,
+    timeout: Duration,
     // Track pending requests: request_id -> (sent_time, completed)
     pending_requests: HashMap<i64, (Instant, bool)>,
     // Cache completed responses that were processed but not yet retrieved
@@ -209,7 +209,7 @@ impl BulkStreamWriter {
             encoder,
             schema_sent: false,
             parallelism: options.parallelism,
-            timeout_ms: options.timeout_ms,
+            timeout: options.timeout,
             pending_requests: HashMap::new(),
             completed_responses: HashMap::new(),
         })
@@ -248,7 +248,7 @@ impl BulkStreamWriter {
             return Ok(response);
         }
 
-        let timeout_duration = Duration::from_millis(self.timeout_ms);
+        let timeout_duration = self.timeout;
         let start_time = Instant::now();
 
         loop {
@@ -256,7 +256,7 @@ impl BulkStreamWriter {
             if start_time.elapsed() > timeout_duration {
                 return error::RequestTimeoutSnafu {
                     request_ids: vec![target_request_id],
-                    timeout_ms: self.timeout_ms,
+                    timeout: self.timeout,
                 }
                 .fail();
             }
@@ -377,7 +377,7 @@ impl BulkStreamWriter {
 
     /// Process pending responses and handle timeouts
     async fn process_pending_responses(&mut self) -> Result<()> {
-        let timeout_duration = Duration::from_millis(self.timeout_ms);
+        let timeout_duration = self.timeout;
         let now = Instant::now();
 
         // Check for timeouts
@@ -391,7 +391,7 @@ impl BulkStreamWriter {
         if !timed_out_requests.is_empty() {
             return error::RequestTimeoutSnafu {
                 request_ids: timed_out_requests,
-                timeout_ms: self.timeout_ms,
+                timeout: self.timeout,
             }
             .fail();
         }

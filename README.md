@@ -100,9 +100,9 @@ let mut bulk_writer = bulk_inserter
     .create_bulk_stream_writer(
         &table_template,
         Some(BulkWriteOptions::default()
-            .with_parallelism(8)      // 8 concurrent requests
-            .with_compression(true)   // Enable compression
-            .with_timeout_ms(60000)   // 60s timeout
+            .with_parallelism(8)            // 8 concurrent requests
+            .with_compression(true)         // Enable compression
+            .with_timeout(Duration::from_secs(60))  // 60s timeout
         ),
     )
     .await?;

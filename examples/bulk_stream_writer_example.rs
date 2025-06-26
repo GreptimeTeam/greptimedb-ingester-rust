@@ -81,7 +81,7 @@ async fn run_sequential_writes() -> Result<Duration> {
                 BulkWriteOptions::default()
                     .with_compression(true)
                     .with_parallelism(1) // Single in-flight request
-                    .with_timeout_ms(30000),
+                    .with_timeout(Duration::from_secs(30)), // Using Duration for clearer API
             ),
         )
         .await?;
@@ -154,7 +154,7 @@ async fn run_parallel_writes() -> Result<Duration> {
                 BulkWriteOptions::default()
                     .with_compression(true)
                     .with_parallelism(16) // High concurrency for maximum throughput
-                    .with_timeout_ms(60000),
+                    .with_timeout(Duration::from_secs(60)), // 60 second timeout
             ),
         )
         .await?;

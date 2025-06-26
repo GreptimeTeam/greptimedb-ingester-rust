@@ -150,13 +150,13 @@ pub enum Error {
     },
 
     #[snafu(display(
-        "Request timeout after {}ms for request IDs: {:?}",
-        timeout_ms,
+        "Request timeout after {:?} for request IDs: {:?}",
+        timeout,
         request_ids
     ))]
     RequestTimeout {
         request_ids: Vec<i64>,
-        timeout_ms: u64,
+        timeout: std::time::Duration,
         #[snafu(implicit)]
         location: Location,
     },

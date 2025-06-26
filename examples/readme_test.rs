@@ -102,7 +102,7 @@ async fn test_main_readme_bulk_api() -> Result<()> {
                 BulkWriteOptions::default()
                     .with_parallelism(8) // 8 concurrent requests
                     .with_compression(true) // Enable compression
-                    .with_timeout_ms(60000), // 60s timeout
+                    .with_timeout(Duration::from_secs(60)), // 60s timeout
             ),
         )
         .await?;
