@@ -132,11 +132,14 @@ impl BulkStreamWriter {
         };
 
         // Pre-compute Arrow schema to avoid recreating it for each batch
-        let fields: Vec<Field> = table_schema
+        let fields: Result<Vec<Field>> = table_schema
             .iter()
-            .map(|col| Field::new(&col.name, column_data_type_to_arrow(col.data_type), true))
+            .map(|col| {
+                column_data_type_to_arrow(col.data_type)
+                    .map(|data_type| Field::new(&col.name, data_type, true))
+            })
             .collect();
-        let arrow_schema = Arc::new(Schema::new(fields));
+        let arrow_schema = Arc::new(Schema::new(fields?));
 
         // Create a channel for streaming FlightData
         let (sender, receiver) = mpsc::channel::<FlightData>(1000);
@@ -435,8 +438,8 @@ impl Drop for BulkStreamWriter {
 
 // Helper function to convert ColumnDataType to Arrow DataType
 // Based on GreptimeDB Java implementation - only supports actually implemented types
-fn column_data_type_to_arrow(data_type: ColumnDataType) -> DataType {
-    match data_type {
+fn column_data_type_to_arrow(data_type: ColumnDataType) -> Result<DataType> {
+    Ok(match data_type {
         // Integer types
         ColumnDataType::Int8 => DataType::Int8,
         ColumnDataType::Int16 => DataType::Int16,
@@ -482,8 +485,13 @@ fn column_data_type_to_arrow(data_type: ColumnDataType) -> DataType {
         ColumnDataType::Json => DataType::Binary,
 
         // Unsupported types - these should not be used
-        _ => panic!("Unsupported data type: {:?}. Only basic types, timestamps, times, decimal128, and json are supported.", data_type),
-    }
+        _ => {
+            return error::UnsupportedDataTypeSnafu {
+                data_type: format!("{:?}. Not supported", data_type),
+            }
+            .fail();
+        }
+    })
 }
 
 // Re-export the proto ColumnDataType for convenience
