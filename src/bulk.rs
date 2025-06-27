@@ -274,14 +274,11 @@ impl BulkStreamWriter {
             if let Some(response) = next_option {
                 let response = response?;
                 let request_id = response.request_id();
+                self.pending_requests.remove(&request_id);
                 if request_id == target_request_id {
-                    // Mark as completed and remove from pending
-                    self.pending_requests.remove(&request_id);
                     return Ok(response);
                 } else {
-                    // Cache other responses and remove from pending
                     self.completed_responses.insert(request_id, response);
-                    self.pending_requests.remove(&request_id);
                 }
             } else {
                 return error::StreamEndedSnafu.fail();
