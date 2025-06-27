@@ -22,6 +22,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tokio::select;
 use tokio::time::timeout;
 
 use arrow_array::builder::BinaryBuilder;
@@ -290,7 +291,8 @@ impl BulkStreamWriter {
 
     /// Wait for all pending requests to complete and return the responses
     pub async fn wait_for_all_pending(&mut self) -> Result<Vec<DoPutResponse>> {
-        let mut responses = Vec::new();
+        let mut responses =
+            Vec::with_capacity(self.pending_requests.len() + self.completed_responses.len());
 
         // First, drain all cached responses that have corresponding pending requests
         let completed_responses = std::mem::take(&mut self.completed_responses);
@@ -306,39 +308,63 @@ impl BulkStreamWriter {
         // Then wait for remaining responses
         while !self.pending_requests.is_empty() {
             let remaining_timeout = timeout_duration.saturating_sub(start_time.elapsed());
-            if remaining_timeout.is_zero() {
-                let pending_ids: Vec<i64> = self.pending_requests.keys().cloned().collect();
-                return error::RequestTimeoutSnafu {
-                    request_ids: pending_ids,
-                    timeout: self.timeout,
-                }
-                .fail();
-            }
+            let timeout_sleep = tokio::time::sleep(remaining_timeout);
 
-            let next_result = timeout(remaining_timeout, self.response_stream.next()).await;
-            let next_option = match next_result {
-                Ok(option) => option,
-                Err(_) => {
-                    let pending_ids: Vec<i64> = self.pending_requests.keys().cloned().collect();
+            select! {
+                _ = timeout_sleep => {
+                    let pending_ids: Vec<RequestId> = self.pending_requests.keys().cloned().collect();
                     return error::RequestTimeoutSnafu {
                         request_ids: pending_ids,
                         timeout: self.timeout,
                     }
                     .fail();
                 }
-            };
-            if let Some(response) = next_option {
-                let response = response?;
-                let request_id = response.request_id();
+                next_option = self.response_stream.next() => {
+                    match next_option {
+                        Some(response) => {
+                            // Process the first response
+                            self.handle_single_response(response?, &mut responses)?;
 
-                // Always add response to results, and remove from pending if exists
-                self.pending_requests.remove(&request_id);
-                responses.push(response);
-            } else {
-                return error::StreamEndedSnafu.fail();
+                            // Drain immediately available responses to avoid false timeouts
+                            loop {
+                                let drain_timeout = tokio::time::sleep(Duration::from_millis(5));
+                                select! {
+                                    _ = drain_timeout => break,
+                                    next_option = self.response_stream.next() => {
+                                        match next_option {
+                                            Some(response) => {
+                                                self.handle_single_response(response?, &mut responses)?;
+                                            }
+                                            None => return self.handle_stream_end(responses),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        None => return self.handle_stream_end(responses),
+                    }
+                }
             }
         }
 
+        Ok(responses)
+    }
+
+    /// Helper method to handle a single response
+    fn handle_single_response(
+        &mut self,
+        response: DoPutResponse,
+        responses: &mut Vec<DoPutResponse>,
+    ) -> Result<()> {
+        let request_id = response.request_id();
+        self.pending_requests.remove(&request_id);
+        responses.push(response);
+        Ok(())
+    }
+
+    /// Helper method to handle stream end cases
+    fn handle_stream_end(&self, responses: Vec<DoPutResponse>) -> Result<Vec<DoPutResponse>> {
+        ensure!(self.pending_requests.is_empty(), error::StreamEndedSnafu);
         Ok(responses)
     }
 
