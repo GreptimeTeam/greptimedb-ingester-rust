@@ -367,7 +367,7 @@ impl BulkStreamWriter {
 
     /// Submit a record batch without waiting for response
     /// Returns the request_id for later tracking
-    async fn submit_record_batch(&mut self, batch: RecordBatch) -> Result<i64> {
+    async fn submit_record_batch(&mut self, batch: RecordBatch) -> Result<RequestId> {
         // Send schema first if not already sent
         if !self.schema_sent {
             let mut schema_data = self.encoder.encode(FlightMessage::Schema(batch.schema()));
