@@ -387,8 +387,19 @@ impl BulkStreamWriter {
                 .await
                 .map_err(|_| error::SendDataSnafu.build())?;
 
-            if let Some(response) = self.response_stream.next().await {
-                let _schema_response = response?;
+            let response_result = timeout(self.timeout, self.response_stream.next()).await;
+            match response_result {
+                Ok(Some(response)) => {
+                    let _schema_response = response?;
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    return Err(error::RequestTimeoutSnafu {
+                        request_ids: vec![],
+                        timeout: self.timeout,
+                    }
+                    .build());
+                }
             }
 
             self.schema_sent = true;
@@ -441,12 +452,22 @@ impl BulkStreamWriter {
         }
 
         // Process one response to make room for new requests
-        if let Some(response) = self.response_stream.next().await {
-            let response = response?;
-            let request_id = response.request_id();
-            if self.pending_requests.remove(&request_id).is_some() {
+        let response_result = timeout(self.timeout, self.response_stream.next()).await;
+        match response_result {
+            Ok(Some(response)) => {
+                let response = response?;
+                let request_id = response.request_id();
+                self.pending_requests.remove(&request_id);
                 // Cache the response so it can be retrieved later
                 self.completed_responses.insert(request_id, response);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                return Err(error::RequestTimeoutSnafu {
+                    request_ids: vec![],
+                    timeout: self.timeout,
+                }
+                .build());
             }
         }
 
