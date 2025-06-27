@@ -184,7 +184,7 @@ impl Database {
             return Ok(());
         }
 
-        let hint_strings: Vec<String> = hints.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+        let hint_strings: Vec<String> = hints.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let value = hint_strings.join(",");
 
         let key = AsciiMetadataKey::from_static("x-greptime-hints");
