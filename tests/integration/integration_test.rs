@@ -47,7 +47,7 @@ fn unique_table_name(prefix: &str) -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    format!("{}_{}", prefix, timestamp)
+    format!("{prefix}_{timestamp}")
 }
 
 #[tokio::test]
@@ -101,10 +101,7 @@ async fn test_low_latency_insert_basic() -> Result<()> {
     let affected_rows = database.insert(insert_request).await?;
     assert_eq!(affected_rows, 2);
 
-    println!(
-        "✓ Low-latency insert test passed: {} rows inserted",
-        affected_rows
-    );
+    println!("✓ Low-latency insert test passed: {affected_rows} rows inserted");
     Ok(())
 }
 
@@ -117,10 +114,7 @@ async fn test_bulk_stream_writer_sequential() -> Result<()> {
 
     // 🎯 Important: Bulk API does not create tables automatically
     // We must create the table manually first - here we use insert API
-    println!(
-        "🔧 Creating table '{}' using insert API (auto table creation)...",
-        table_name
-    );
+    println!("🔧 Creating table '{table_name}' using insert API (auto table creation)...");
     let database = Database::new_with_dbname(&config.database, client.clone());
 
     let init_schema = vec![
@@ -155,10 +149,7 @@ async fn test_bulk_stream_writer_sequential() -> Result<()> {
     };
 
     let init_result = database.insert(init_request).await?;
-    println!(
-        "✅ Table created with initial row: {} rows inserted",
-        init_result
-    );
+    println!("✅ Table created with initial row: {init_result} rows inserted");
 
     // Now use bulk API (table already exists)
     let bulk_inserter = BulkInserter::new(client, &config.database);
@@ -199,10 +190,7 @@ async fn test_bulk_stream_writer_sequential() -> Result<()> {
     bulk_writer.finish().await?;
 
     assert_eq!(total_rows, batch_size * 3);
-    println!(
-        "✓ Bulk sequential test passed: {} total rows (+ 1 initial row)",
-        total_rows
-    );
+    println!("✓ Bulk sequential test passed: {total_rows} total rows (+ 1 initial row)");
     Ok(())
 }
 
@@ -214,10 +202,7 @@ async fn test_bulk_stream_writer_parallel() -> Result<()> {
     let table_name = unique_table_name("bulk_parallel");
 
     // 🎯 Important: Bulk API requires existing tables - create manually first
-    println!(
-        "🔧 Creating table '{}' using insert API for parallel test...",
-        table_name
-    );
+    println!("🔧 Creating table '{table_name}' using insert API for parallel test...");
     let database = Database::new_with_dbname(&config.database, client.clone());
 
     let init_schema = vec![
@@ -250,10 +235,7 @@ async fn test_bulk_stream_writer_parallel() -> Result<()> {
     };
 
     let init_result = database.insert(init_request).await?;
-    println!(
-        "✅ Parallel test table created: {} rows inserted",
-        init_result
-    );
+    println!("✅ Parallel test table created: {init_result} rows inserted");
 
     // Now use bulk API for parallel operations
     let bulk_inserter = BulkInserter::new(client, &config.database);
@@ -364,10 +346,7 @@ async fn test_data_types_comprehensive() -> Result<()> {
     let affected_rows = database.insert(insert_request).await?;
     assert_eq!(affected_rows, 1);
 
-    println!(
-        "✓ Data types test passed: {} row with all data types",
-        affected_rows
-    );
+    println!("✓ Data types test passed: {affected_rows} row with all data types");
     Ok(())
 }
 

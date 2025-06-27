@@ -148,7 +148,7 @@ fn test_main_readme_data_access() {
 
     // Type-safe value access
     if let Some(device_name) = row.get_string(1) {
-        println!("Device: {}", device_name);
+        println!("Device: {device_name}");
     }
 
     // Binary data access
@@ -184,7 +184,7 @@ async fn test_main_readme_error_handling() {
 
     // This demonstrates the error handling pattern from README
     match database.insert(request).await {
-        Ok(affected_rows) => println!("Inserted {} rows", affected_rows),
+        Ok(affected_rows) => println!("Inserted {affected_rows} rows"),
         Err(Error::RequestTimeout { .. }) => {
             // Handle timeout
             println!("Request timed out");
@@ -194,7 +194,7 @@ async fn test_main_readme_error_handling() {
             println!("Metadata serialization error");
         }
         Err(e) => {
-            eprintln!("Unexpected error: {:?}", e);
+            eprintln!("Unexpected error: {e:?}");
         }
     }
 

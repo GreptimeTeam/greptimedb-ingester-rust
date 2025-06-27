@@ -39,7 +39,7 @@ pub async fn realtime_sensor_ingest() -> Result<()> {
 
     // Simulate real-time data arrival - small batches with immediate processing
     for batch_num in 1..=5 {
-        println!("Processing real-time batch {}...", batch_num);
+        println!("Processing real-time batch {batch_num}...");
 
         let sensor_schema = build_sensor_schema();
         let sensor_data = build_current_sensor_reading(batch_num);
@@ -216,10 +216,7 @@ pub async fn data_types_demonstration() -> Result<()> {
     let affected_rows = database.insert(insert_request).await?;
     let latency = start_time.elapsed();
 
-    println!(
-        "✓ Successfully inserted {} rows with various data types",
-        affected_rows
-    );
+    println!("✓ Successfully inserted {affected_rows} rows with various data types");
     println!("  Insertion latency: {:.1}ms", latency.as_millis());
 
     Ok(())

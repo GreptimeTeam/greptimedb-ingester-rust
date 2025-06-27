@@ -184,7 +184,7 @@ async fn run_parallel_writes() -> Result<Duration> {
                     println!("  Submitted: {}/{} batches", batch_num + 1, batch_count);
                 }
             }
-            Err(e) => eprintln!("  Submission error for batch {}: {:?}", batch_num, e),
+            Err(e) => eprintln!("  Submission error for batch {batch_num}: {e:?}"),
         }
     }
 
@@ -224,10 +224,7 @@ async fn run_parallel_writes() -> Result<Duration> {
         wait_duration.as_secs_f64(),
         avg_latency
     );
-    println!(
-        "    - Success rate: {}/{} batches",
-        success_count, batch_count
-    );
+    println!("    - Success rate: {success_count}/{batch_count} batches");
 
     Ok(total_duration)
 }
@@ -243,7 +240,7 @@ async fn main() -> Result<()> {
     let sequential_duration = match run_sequential_writes().await {
         Ok(duration) => Some(duration),
         Err(e) => {
-            eprintln!("Sequential write error: {:?}", e);
+            eprintln!("Sequential write error: {e:?}");
             None
         }
     };
@@ -256,7 +253,7 @@ async fn main() -> Result<()> {
     let parallel_duration = match run_parallel_writes().await {
         Ok(duration) => Some(duration),
         Err(e) => {
-            eprintln!("Parallel write error: {:?}", e);
+            eprintln!("Parallel write error: {e:?}");
             None
         }
     };
@@ -271,7 +268,7 @@ async fn main() -> Result<()> {
             println!("Parallel approach:   {:.2}s", par_dur.as_secs_f64());
 
             if speedup > 1.0 {
-                println!("⚡ Speedup: {:.1}x faster with parallel approach", speedup);
+                println!("⚡ Speedup: {speedup:.1}x faster with parallel approach");
             } else {
                 println!(
                     "⚠️  Sequential was {:.1}x faster (network may be bottleneck)",
