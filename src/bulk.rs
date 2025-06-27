@@ -163,8 +163,8 @@ pub struct BulkStreamWriter {
     // Parallel processing fields
     parallelism: usize,
     timeout: Duration,
-    // Track pending requests: request_id -> (sent_time, completed)
-    pending_requests: HashMap<i64, (Instant, bool)>,
+    // Track pending requests: request_id -> sent_time
+    pending_requests: HashMap<i64, Instant>,
     // Cache completed responses that were processed but not yet retrieved
     completed_responses: HashMap<i64, DoPutResponse>,
 }
@@ -246,7 +246,6 @@ impl BulkStreamWriter {
     pub async fn wait_for_response(&mut self, target_request_id: i64) -> Result<DoPutResponse> {
         // Check if the response is already cached
         if let Some(response) = self.completed_responses.remove(&target_request_id) {
-            self.pending_requests.remove(&target_request_id);
             return Ok(response);
         }
 
@@ -283,11 +282,9 @@ impl BulkStreamWriter {
                     self.pending_requests.remove(&request_id);
                     return Ok(response);
                 } else {
-                    // Cache other responses and mark as completed
+                    // Cache other responses and remove from pending
                     self.completed_responses.insert(request_id, response);
-                    if let Some((_, completed)) = self.pending_requests.get_mut(&request_id) {
-                        *completed = true;
-                    }
+                    self.pending_requests.remove(&request_id);
                 }
             } else {
                 return error::StreamEndedSnafu.fail();
@@ -342,14 +339,9 @@ impl BulkStreamWriter {
                 let response = response?;
                 let request_id = response.request_id();
 
-                // Mark as completed and remove from pending
-                match self.pending_requests.remove(&request_id) {
-                    Some(_) => responses.push(response),
-                    None => {
-                        // If no corresponding pending request, cache it
-                        self.completed_responses.insert(request_id, response);
-                    }
-                }
+                // Always add response to results, and remove from pending if exists
+                self.pending_requests.remove(&request_id);
+                responses.push(response);
             } else {
                 return error::StreamEndedSnafu.fail();
             }
@@ -408,8 +400,7 @@ impl BulkStreamWriter {
             .map_err(|_| error::SendDataSnafu.build())?;
 
         // Track this request but don't wait for response
-        self.pending_requests
-            .insert(request_id, (Instant::now(), false));
+        self.pending_requests.insert(request_id, Instant::now());
 
         Ok(request_id)
     }
@@ -421,8 +412,8 @@ impl BulkStreamWriter {
 
         // Check for timeouts
         let mut timed_out_requests = Vec::new();
-        for (&request_id, &(sent_time, completed)) in &self.pending_requests {
-            if !completed && now.duration_since(sent_time) > timeout_duration {
+        for (&request_id, &sent_time) in &self.pending_requests {
+            if now.duration_since(sent_time) > timeout_duration {
                 timed_out_requests.push(request_id);
             }
         }
@@ -439,16 +430,11 @@ impl BulkStreamWriter {
         if let Some(response) = self.response_stream.next().await {
             let response = response?;
             let request_id = response.request_id();
-            if let Some((_, completed)) = self.pending_requests.get_mut(&request_id) {
-                *completed = true;
+            if self.pending_requests.remove(&request_id).is_some() {
                 // Cache the response so it can be retrieved later
                 self.completed_responses.insert(request_id, response);
             }
         }
-
-        // Remove completed requests
-        self.pending_requests
-            .retain(|_, (_, completed)| !*completed);
 
         Ok(())
     }
