@@ -17,11 +17,12 @@ The ingester provides two main APIs tailored for different use cases:
 ### 1. Low-Latency Insert API 🚀
 **Best for**: Real-time applications, IoT sensors, interactive systems
 
-```rust
+```rust,no_run
 use greptimedb_ingester::api::v1::*;
 use greptimedb_ingester::client::Client;
 use greptimedb_ingester::{database::Database, Result};
 
+# async fn example() -> Result<()> {
 // Connect to GreptimeDB
 let client = Client::with_urls(&["localhost:4001"]);
 let database = Database::new_with_dbname("public", client);
@@ -38,16 +39,26 @@ let insert_request = RowInsertRequests {
 };
 
 let affected_rows = database.insert(insert_request).await?;
+# Ok(())
+# }
 ```
 
 ### 2. High-Throughput Bulk API ⚡
 **Best for**: ETL operations, data migration, batch processing, log ingestion
 
-```rust
+```rust,no_run
 use greptimedb_ingester::{BulkInserter, BulkWriteOptions, ColumnDataType, Row, Table, Value};
 use greptimedb_ingester::api::v1::*;
 use greptimedb_ingester::helpers::schema::*;
 use greptimedb_ingester::helpers::values::*;
+use greptimedb_ingester::client::Client;
+use greptimedb_ingester::database::Database;
+use std::time::Duration;
+
+# async fn example() -> greptimedb_ingester::Result<()> {
+# let client = Client::with_urls(&["localhost:4001"]);
+# let data_batches: Vec<Vec<greptimedb_ingester::Row>> = vec![];
+# let current_timestamp = || 1234567890000i64;
 
 // Step 1: Create table manually (bulk API requires table to exist beforehand)
 // Option A: Use insert API to create table
@@ -63,7 +74,7 @@ let init_request = RowInsertRequests {
         table_name: "sensor_readings".to_string(),
         rows: Some(Rows {
             schema: init_schema,
-            rows: vec![Row {
+            rows: vec![greptimedb_ingester::api::v1::Row {
                 values: vec![
                     timestamp_millisecond_value(current_timestamp()),
                     string_value("init_device".to_string()),
@@ -116,6 +127,8 @@ for batch in data_batches {
 // Wait for all operations to complete
 let responses = bulk_writer.wait_for_all_pending().await?;
 bulk_writer.finish().await?;
+# Ok(())
+# }
 ```
 
 > **Important**: 
@@ -175,7 +188,9 @@ Run with: `cargo run --example bulk_stream_writer_example`
 
 The bulk API supports true parallelism through async request submission:
 
-```rust
+```rust,no_run
+# use greptimedb_ingester::Row;
+# async fn example(bulk_writer: &mut greptimedb_ingester::BulkStreamWriter, batches: Vec<Vec<greptimedb_ingester::Row>>) -> greptimedb_ingester::Result<()> {
 // Submit multiple batches without waiting
 let mut request_ids = Vec::new();
 for batch in batches {
@@ -192,14 +207,16 @@ for request_id in request_ids {
     println!("Request {} completed with {} rows", 
              request_id, response.affected_rows());
 }
+# Ok(())
+# }
 ```
 
 ### Data Type Support
 
 Full support for GreptimeDB data types:
 
-```rust
-use greptimedb_ingester::{Value, ColumnDataType};
+```rust,no_run
+use greptimedb_ingester::{Value, ColumnDataType, Row};
 
 let row = Row::new()
     .add_value(Value::TimestampMillisecond(1234567890123))
@@ -215,7 +232,10 @@ let row = Row::new()
 
 Efficient data access patterns:
 
-```rust
+```rust,no_run
+# use greptimedb_ingester::Row;
+# let row = Row::new();
+# fn process_binary(_data: &[u8]) {}
 // Type-safe value access
 if let Some(device_name) = row.get_string(1) {
     println!("Device: {}", device_name);
@@ -252,8 +272,9 @@ if let Some(binary_data) = row.get_binary(5) {
 
 Set up your GreptimeDB connection:
 
-```rust
+```rust,no_run
 use greptimedb_ingester::{ChannelConfig, ChannelManager};
+use greptimedb_ingester::client::Client;
 use std::time::Duration;
 
 let channel_config = ChannelConfig::default()
@@ -268,8 +289,11 @@ let client = Client::with_manager_and_urls(channel_manager,
 
 The library provides comprehensive error types:
 
-```rust
+```rust,no_run
 use greptimedb_ingester::{Result, Error};
+# use greptimedb_ingester::api::v1::RowInsertRequests;
+# use greptimedb_ingester::database::Database;
+# async fn example(database: &Database, request: RowInsertRequests) {
 
 match database.insert(request).await {
     Ok(affected_rows) => println!("Inserted {} rows", affected_rows),
@@ -283,6 +307,7 @@ match database.insert(request).await {
         eprintln!("Unexpected error: {:?}", e);
     }
 }
+# }
 ```
 
 ## API Reference
