@@ -40,6 +40,8 @@ use crate::table::{Column, Row, Table};
 use crate::{error, Result};
 use snafu::{ensure, ResultExt};
 
+pub type RequestId = i64;
+
 // Macro to generate array conversion for simple types
 macro_rules! build_primitive_array {
     ($rows:expr, $col_idx:expr, $getter:ident, $array_type:ty) => {{
@@ -157,16 +159,16 @@ pub struct BulkStreamWriter {
     table_schema: Vec<Column>,
     // Cache the Arrow schema to avoid recreating it for each batch
     arrow_schema: Arc<Schema>,
-    next_request_id: i64,
+    next_request_id: RequestId,
     encoder: FlightEncoder,
     schema_sent: bool,
     // Parallel processing fields
     parallelism: usize,
     timeout: Duration,
     // Track pending requests: request_id -> sent_time
-    pending_requests: HashMap<i64, Instant>,
+    pending_requests: HashMap<RequestId, Instant>,
     // Cache completed responses that were processed but not yet retrieved
-    completed_responses: HashMap<i64, DoPutResponse>,
+    completed_responses: HashMap<RequestId, DoPutResponse>,
 }
 
 impl BulkStreamWriter {
@@ -219,11 +221,6 @@ impl BulkStreamWriter {
 
     /// Write rows to the stream using the fixed table schema
     pub async fn write_rows(&mut self, rows: Vec<Row>) -> Result<DoPutResponse> {
-        if rows.is_empty() {
-            // Return a dummy response for empty input
-            return Ok(DoPutResponse::new(0, 0));
-        }
-
         // Use the async implementation and wait for the response
         let request_id = self.write_rows_async(rows).await?;
         self.wait_for_response(request_id).await
@@ -231,11 +228,7 @@ impl BulkStreamWriter {
 
     /// Submit rows for writing without waiting for response
     /// Returns a request_id that can be used to wait for the specific response
-    pub async fn write_rows_async(&mut self, rows: Vec<Row>) -> Result<i64> {
-        if rows.is_empty() {
-            return Ok(0);
-        }
-
+    pub async fn write_rows_async(&mut self, rows: Vec<Row>) -> Result<RequestId> {
         let record_batch = self.rows_to_record_batch(&rows)?;
         let request_id = self.submit_record_batch(record_batch).await?;
 
@@ -243,7 +236,10 @@ impl BulkStreamWriter {
     }
 
     /// Wait for a specific request's response by request_id
-    pub async fn wait_for_response(&mut self, target_request_id: i64) -> Result<DoPutResponse> {
+    pub async fn wait_for_response(
+        &mut self,
+        target_request_id: RequestId,
+    ) -> Result<DoPutResponse> {
         // Check if the response is already cached
         if let Some(response) = self.completed_responses.remove(&target_request_id) {
             return Ok(response);
@@ -381,8 +377,7 @@ impl BulkStreamWriter {
         }
 
         // Send the request
-        self.next_request_id += 1;
-        let request_id = self.next_request_id;
+        let request_id = self.next_request_id();
         let message = FlightMessage::RecordBatch(batch);
         let mut data = self.encoder.encode(message);
         let metadata = DoPutMetadata::new(request_id);
@@ -437,7 +432,7 @@ impl BulkStreamWriter {
 
     /// Convert rows to Arrow RecordBatch using cached schema
     fn rows_to_record_batch(&self, rows: &[Row]) -> Result<RecordBatch> {
-        ensure!(!rows.is_empty(), error::EmptyTableSnafu);
+        ensure!(!rows.is_empty(), error::EmptyRowsSnafu);
 
         // Convert all rows to arrays
         let arrays = self.rows_to_arrays(rows)?;
@@ -617,6 +612,15 @@ impl BulkStreamWriter {
             .map_err(|_| error::CloseSenderSnafu.build())?;
 
         Ok(all_responses)
+    }
+
+    fn next_request_id(&mut self) -> RequestId {
+        // Skip ID 0 as it's reserved for special cases
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        if self.next_request_id == 0 {
+            self.next_request_id = 1;
+        }
+        self.next_request_id
     }
 }
 

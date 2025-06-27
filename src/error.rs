@@ -96,12 +96,6 @@ pub enum Error {
         location: Location,
     },
 
-    #[snafu(display("Cannot create RecordBatch from empty table"))]
-    EmptyTable {
-        #[snafu(implicit)]
-        location: Location,
-    },
-
     #[snafu(display("Failed to create Arrow RecordBatch"))]
     CreateRecordBatch {
         #[snafu(source)]
