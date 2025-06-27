@@ -158,8 +158,8 @@ Run with: `cargo run --example bulk_stream_writer_example`
 ## Performance Characteristics
 
 ### Low-Latency Insert API
-- **Latency**: 1-10ms per operation
-- **Throughput**: 100-1,000 ops/sec
+- **Latency**: sub-millisecond per operation
+- **Throughput**: 1k ~ 10k ops/sec
 - **Memory**: Low, constant
 - **Use case**: Real-time applications
 
