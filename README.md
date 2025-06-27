@@ -164,8 +164,8 @@ Run with: `cargo run --example bulk_stream_writer_example`
 - **Use case**: Real-time applications
 
 ### Bulk Streaming API
-- **Latency**: 100-1000ms per batch
-- **Throughput**: 10,000-100,000+ rows/sec
+- **Latency**: 1-1000 milliseconds per batch
+- **Throughput**: > 10k rows/sec
 - **Memory**: Higher during batching
 - **Use case**: High-volume processing
 

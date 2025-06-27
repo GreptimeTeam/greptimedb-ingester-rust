@@ -22,6 +22,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tokio::time::timeout;
+
 use arrow_array::builder::BinaryBuilder;
 use arrow_array::{Array, RecordBatch};
 use arrow_flight::{FlightData, FlightDescriptor};
@@ -109,7 +111,7 @@ impl BulkInserter {
 }
 
 /// Configuration options for bulk write operations
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct BulkWriteOptions {
     pub compression: bool,
     pub timeout: Duration,
@@ -252,8 +254,9 @@ impl BulkStreamWriter {
         let start_time = Instant::now();
 
         loop {
+            let remaining_timeout = timeout_duration.saturating_sub(start_time.elapsed());
             // Check timeout
-            if start_time.elapsed() > timeout_duration {
+            if remaining_timeout.is_zero() {
                 return error::RequestTimeoutSnafu {
                     request_ids: vec![target_request_id],
                     timeout: self.timeout,
@@ -261,7 +264,18 @@ impl BulkStreamWriter {
                 .fail();
             }
 
-            if let Some(response) = self.response_stream.next().await {
+            let next_result = timeout(remaining_timeout, self.response_stream.next()).await;
+            let next_option = match next_result {
+                Ok(option) => option,
+                Err(_) => {
+                    return error::RequestTimeoutSnafu {
+                        request_ids: vec![target_request_id],
+                        timeout: self.timeout,
+                    }
+                    .fail();
+                }
+            };
+            if let Some(response) = next_option {
                 let response = response?;
                 let request_id = response.request_id();
                 if request_id == target_request_id {

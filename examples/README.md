@@ -12,7 +12,7 @@ cargo run --example insert_example
 ```
 
 **Features:**
-- **Minimal latency**: 1-10ms per operation
+- **Minimal latency**: sub-millisecond per operation
 - **Real-time processing**: Immediate feedback and processing
 - **Small batches**: Optimized for 200-1000 rows per request
 - **Interactive patterns**: Perfect for user-facing applications
@@ -30,9 +30,9 @@ cargo run --example bulk_stream_writer_example
 ```
 
 **Features:**
-- **High throughput**: 10,000-100,000+ rows/sec
+- **High throughput**: 10k-100k+ rows/sec
 - **Parallel processing**: Configurable concurrent requests
-- **Efficient batching**: Optimized for 2000-100000+ rows per request
+- **Efficient batching**: Optimized for 2k-100k+ rows per request
 - **Performance optimization**: Compression, connection reuse
 
 **Demonstrates:**
@@ -86,14 +86,14 @@ dbname = "public"
 ## Performance Characteristics
 
 ### Low-Latency Insert (`insert_example.rs`)
-- **Latency**: 1-10ms per operation
+- **Latency**: sub-millisecond per operation
 - **Throughput**: 200-1,000 ops/sec
 - **Memory**: Low, constant
 - **Network**: One request per operation
 
 ### High-Throughput Bulk (`bulk_stream_writer_example.rs`)
-- **Latency**: 100-1000ms per batch
-- **Throughput**: 10,000-100,000+ rows/sec
+- **Latency**: 1-1000 milliseconds per batch
+- **Throughput**: > 10k rows/sec
 - **Memory**: Higher during batching
 - **Network**: Parallel requests with compression
 
