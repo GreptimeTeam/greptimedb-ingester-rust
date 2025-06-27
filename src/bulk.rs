@@ -359,6 +359,14 @@ impl BulkStreamWriter {
         Ok(())
     }
 
+    /// Helper method to cache a single response
+    fn cache_response(&mut self, response: DoPutResponse) -> Result<()> {
+        let request_id = response.request_id();
+        self.pending_requests.remove(&request_id);
+        self.completed_responses.insert(request_id, response);
+        Ok(())
+    }
+
     /// Helper method to handle stream end cases
     fn handle_stream_end(&self, responses: Vec<DoPutResponse>) -> Result<Vec<DoPutResponse>> {
         ensure!(self.pending_requests.is_empty(), error::StreamEndedSnafu);
@@ -430,18 +438,22 @@ impl BulkStreamWriter {
         Ok(request_id)
     }
 
-    /// Process pending responses and handle timeouts
-    async fn process_pending_responses(&mut self) -> Result<()> {
+    /// Check for timed out requests
+    fn check_timeouts(&self) -> Result<()> {
         let timeout_duration = self.timeout;
         let now = Instant::now();
 
-        // Check for timeouts
-        let mut timed_out_requests = Vec::new();
-        for (&request_id, &sent_time) in &self.pending_requests {
-            if now.duration_since(sent_time) > timeout_duration {
-                timed_out_requests.push(request_id);
-            }
-        }
+        let timed_out_requests: Vec<RequestId> = self
+            .pending_requests
+            .iter()
+            .filter_map(|(&request_id, &sent_time)| {
+                if now.duration_since(sent_time) > timeout_duration {
+                    Some(request_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         if !timed_out_requests.is_empty() {
             return error::RequestTimeoutSnafu {
@@ -451,23 +463,47 @@ impl BulkStreamWriter {
             .fail();
         }
 
-        // Process one response to make room for new requests
+        Ok(())
+    }
+
+    /// Process pending responses to make room for new requests
+    async fn process_pending_responses(&mut self) -> Result<()> {
+        // First check for any timed out requests
+        self.check_timeouts()?;
+
+        // Process responses to make room for new requests
+        // First, wait for at least one response (blocking)
         let response_result = timeout(self.timeout, self.response_stream.next()).await;
         match response_result {
             Ok(Some(response)) => {
                 let response = response?;
-                let request_id = response.request_id();
-                self.pending_requests.remove(&request_id);
-                // Cache the response so it can be retrieved later
-                self.completed_responses.insert(request_id, response);
+                self.cache_response(response)?;
             }
-            Ok(None) => {}
+            Ok(None) => return Ok(()), // Stream ended
             Err(_) => {
+                let pending_ids: Vec<RequestId> = self.pending_requests.keys().cloned().collect();
                 return Err(error::RequestTimeoutSnafu {
-                    request_ids: vec![],
+                    request_ids: pending_ids,
                     timeout: self.timeout,
                 }
                 .build());
+            }
+        }
+
+        // Then drain any additional responses quickly
+        loop {
+            let drain_timeout = tokio::time::sleep(Duration::from_millis(1));
+            select! {
+                _ = drain_timeout => break,
+                next_option = self.response_stream.next() => {
+                    match next_option {
+                        Some(response) => {
+                            let response = response?;
+                            self.cache_response(response)?;
+                        }
+                        None => break, // Stream ended
+                    }
+                }
             }
         }
 
