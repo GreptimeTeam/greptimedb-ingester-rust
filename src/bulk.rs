@@ -650,7 +650,7 @@ fn column_data_type_to_arrow(data_type: ColumnDataType) -> Result<DataType> {
         // Unsupported types - these should not be used
         _ => {
             return error::UnsupportedDataTypeSnafu {
-                data_type: format!("{:?}. Not supported", data_type),
+                data_type: format!("{data_type:?}. Not supported"),
             }
             .fail();
         }
