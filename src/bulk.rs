@@ -299,13 +299,9 @@ impl BulkStreamWriter {
         // First, drain all cached responses that have corresponding pending requests
         let completed_responses = std::mem::take(&mut self.completed_responses);
         for (request_id, response) in completed_responses {
-            match self.pending_requests.remove(&request_id) {
-                Some(_) => responses.push(response),
-                None => {
-                    // If no corresponding pending request, put it back (shouldn't happen normally)
-                    self.completed_responses.insert(request_id, response);
-                }
-            }
+            // Always add response to results, and remove from pending if exists
+            self.pending_requests.remove(&request_id);
+            responses.push(response);
         }
 
         let timeout_duration = self.timeout;
