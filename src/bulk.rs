@@ -311,9 +311,34 @@ impl BulkStreamWriter {
             }
         }
 
+        let timeout_duration = self.timeout;
+        let start_time = Instant::now();
+
         // Then wait for remaining responses
         while !self.pending_requests.is_empty() {
-            if let Some(response) = self.response_stream.next().await {
+            let remaining_timeout = timeout_duration.saturating_sub(start_time.elapsed());
+            if remaining_timeout.is_zero() {
+                let pending_ids: Vec<i64> = self.pending_requests.keys().cloned().collect();
+                return error::RequestTimeoutSnafu {
+                    request_ids: pending_ids,
+                    timeout: self.timeout,
+                }
+                .fail();
+            }
+
+            let next_result = timeout(remaining_timeout, self.response_stream.next()).await;
+            let next_option = match next_result {
+                Ok(option) => option,
+                Err(_) => {
+                    let pending_ids: Vec<i64> = self.pending_requests.keys().cloned().collect();
+                    return error::RequestTimeoutSnafu {
+                        request_ids: pending_ids,
+                        timeout: self.timeout,
+                    }
+                    .fail();
+                }
+            };
+            if let Some(response) = next_option {
                 let response = response?;
                 let request_id = response.request_id();
 
