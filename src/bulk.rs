@@ -831,46 +831,90 @@ fn create_array_builder(
     capacity: usize,
 ) -> Result<Box<dyn ArrayBuilder>> {
     Ok(match data_type {
-        ColumnDataType::Boolean => Box::new(TypedArrayBuilder::<BooleanBuilder>::new(capacity)),
-        ColumnDataType::Int8 => Box::new(TypedArrayBuilder::<Int8Builder>::new(capacity)),
-        ColumnDataType::Int16 => Box::new(TypedArrayBuilder::<Int16Builder>::new(capacity)),
-        ColumnDataType::Int32 => Box::new(TypedArrayBuilder::<Int32Builder>::new(capacity)),
-        ColumnDataType::Int64 => Box::new(TypedArrayBuilder::<Int64Builder>::new(capacity)),
-        ColumnDataType::Uint8 => Box::new(TypedArrayBuilder::<UInt8Builder>::new(capacity)),
-        ColumnDataType::Uint16 => Box::new(TypedArrayBuilder::<UInt16Builder>::new(capacity)),
-        ColumnDataType::Uint32 => Box::new(TypedArrayBuilder::<UInt32Builder>::new(capacity)),
-        ColumnDataType::Uint64 => Box::new(TypedArrayBuilder::<UInt64Builder>::new(capacity)),
-        ColumnDataType::Float32 => Box::new(TypedArrayBuilder::<Float32Builder>::new(capacity)),
-        ColumnDataType::Float64 => Box::new(TypedArrayBuilder::<Float64Builder>::new(capacity)),
-        ColumnDataType::String => Box::new(TypedArrayBuilder::<StringBuilder>::new(capacity)),
-        ColumnDataType::Binary => Box::new(TypedArrayBuilder::<BinaryBuilder>::new(capacity)),
-        ColumnDataType::Date => Box::new(TypedArrayBuilder::<Date32Builder>::new(capacity)),
-        ColumnDataType::Datetime => Box::new(
-            TypedArrayBuilder::<TimestampMicrosecondBuilder>::new(capacity),
-        ),
+        ColumnDataType::Boolean => Box::new(TypedArrayBuilder::<BooleanBuilder>::new(
+            BooleanBuilder::with_capacity(capacity),
+        )),
+        ColumnDataType::Int8 => Box::new(TypedArrayBuilder::<Int8Builder>::new(
+            Int8Builder::with_capacity(capacity),
+        )),
+        ColumnDataType::Int16 => Box::new(TypedArrayBuilder::<Int16Builder>::new(
+            Int16Builder::with_capacity(capacity),
+        )),
+        ColumnDataType::Int32 => Box::new(TypedArrayBuilder::<Int32Builder>::new(
+            Int32Builder::with_capacity(capacity),
+        )),
+        ColumnDataType::Int64 => Box::new(TypedArrayBuilder::<Int64Builder>::new(
+            Int64Builder::with_capacity(capacity),
+        )),
+        ColumnDataType::Uint8 => Box::new(TypedArrayBuilder::<UInt8Builder>::new(
+            UInt8Builder::with_capacity(capacity),
+        )),
+        ColumnDataType::Uint16 => Box::new(TypedArrayBuilder::<UInt16Builder>::new(
+            UInt16Builder::with_capacity(capacity),
+        )),
+        ColumnDataType::Uint32 => Box::new(TypedArrayBuilder::<UInt32Builder>::new(
+            UInt32Builder::with_capacity(capacity),
+        )),
+        ColumnDataType::Uint64 => Box::new(TypedArrayBuilder::<UInt64Builder>::new(
+            UInt64Builder::with_capacity(capacity),
+        )),
+        ColumnDataType::Float32 => Box::new(TypedArrayBuilder::<Float32Builder>::new(
+            Float32Builder::with_capacity(capacity),
+        )),
+        ColumnDataType::Float64 => Box::new(TypedArrayBuilder::<Float64Builder>::new(
+            Float64Builder::with_capacity(capacity),
+        )),
+        ColumnDataType::String => Box::new(TypedArrayBuilder::<StringBuilder>::new(
+            StringBuilder::with_capacity(capacity, capacity * 64),
+        )),
+        ColumnDataType::Binary => Box::new(TypedArrayBuilder::<BinaryBuilder>::new(
+            BinaryBuilder::with_capacity(capacity, capacity * 64),
+        )),
+        ColumnDataType::Date => Box::new(TypedArrayBuilder::<Date32Builder>::new(
+            Date32Builder::with_capacity(capacity),
+        )),
+        ColumnDataType::Datetime => {
+            Box::new(TypedArrayBuilder::<TimestampMicrosecondBuilder>::new(
+                TimestampMicrosecondBuilder::with_capacity(capacity),
+            ))
+        }
         ColumnDataType::TimestampSecond => {
-            Box::new(TypedArrayBuilder::<TimestampSecondBuilder>::new(capacity))
+            Box::new(TypedArrayBuilder::<TimestampSecondBuilder>::new(
+                TimestampSecondBuilder::with_capacity(capacity),
+            ))
         }
-        ColumnDataType::TimestampMillisecond => Box::new(TypedArrayBuilder::<
-            TimestampMillisecondBuilder,
-        >::new(capacity)),
-        ColumnDataType::TimestampMicrosecond => Box::new(TypedArrayBuilder::<
-            TimestampMicrosecondBuilder,
-        >::new(capacity)),
-        ColumnDataType::TimestampNanosecond => Box::new(TypedArrayBuilder::<
-            TimestampNanosecondBuilder,
-        >::new(capacity)),
-        ColumnDataType::TimeSecond => {
-            Box::new(TypedArrayBuilder::<Time32SecondBuilder>::new(capacity))
+        ColumnDataType::TimestampMillisecond => {
+            Box::new(TypedArrayBuilder::<TimestampMillisecondBuilder>::new(
+                TimestampMillisecondBuilder::with_capacity(capacity),
+            ))
         }
+        ColumnDataType::TimestampMicrosecond => {
+            Box::new(TypedArrayBuilder::<TimestampMicrosecondBuilder>::new(
+                TimestampMicrosecondBuilder::with_capacity(capacity),
+            ))
+        }
+        ColumnDataType::TimestampNanosecond => {
+            Box::new(TypedArrayBuilder::<TimestampNanosecondBuilder>::new(
+                TimestampNanosecondBuilder::with_capacity(capacity),
+            ))
+        }
+        ColumnDataType::TimeSecond => Box::new(TypedArrayBuilder::<Time32SecondBuilder>::new(
+            Time32SecondBuilder::with_capacity(capacity),
+        )),
         ColumnDataType::TimeMillisecond => {
-            Box::new(TypedArrayBuilder::<Time32MillisecondBuilder>::new(capacity))
+            Box::new(TypedArrayBuilder::<Time32MillisecondBuilder>::new(
+                Time32MillisecondBuilder::with_capacity(capacity),
+            ))
         }
         ColumnDataType::TimeMicrosecond => {
-            Box::new(TypedArrayBuilder::<Time64MicrosecondBuilder>::new(capacity))
+            Box::new(TypedArrayBuilder::<Time64MicrosecondBuilder>::new(
+                Time64MicrosecondBuilder::with_capacity(capacity),
+            ))
         }
         ColumnDataType::TimeNanosecond => {
-            Box::new(TypedArrayBuilder::<Time64NanosecondBuilder>::new(capacity))
+            Box::new(TypedArrayBuilder::<Time64NanosecondBuilder>::new(
+                Time64NanosecondBuilder::with_capacity(capacity),
+            ))
         }
         ColumnDataType::Decimal128 => Box::new(BinaryArrayBuilder::new(capacity)),
         ColumnDataType::Json => Box::new(BinaryArrayBuilder::new(capacity)),
@@ -889,13 +933,8 @@ struct TypedArrayBuilder<T> {
 }
 
 impl<T> TypedArrayBuilder<T> {
-    fn new(_capacity: usize) -> Self
-    where
-        T: Default,
-    {
-        Self {
-            builder: T::default(),
-        }
+    fn new(builder: T) -> Self {
+        Self { builder }
     }
 }
 
