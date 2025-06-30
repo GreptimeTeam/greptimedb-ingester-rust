@@ -117,29 +117,23 @@ impl AdaptiveAllocStats {
     }
 
     fn record_string(&self, size: usize) {
-        if let Ok(mut window) = self.string_window.lock() {
-            window.add_sample(size);
-        }
+        let mut window = self.string_window.lock().unwrap();
+        window.add_sample(size);
     }
 
     fn record_binary(&self, size: usize) {
-        if let Ok(mut window) = self.binary_window.lock() {
-            window.add_sample(size);
-        }
+        let mut window = self.binary_window.lock().unwrap();
+        window.add_sample(size);
     }
 
     fn avg_string_size(&self) -> usize {
-        self.string_window
-            .lock()
-            .map(|window| window.average())
-            .unwrap_or(64) // Fallback if lock fails
+        let window = self.string_window.lock().unwrap();
+        window.average()
     }
 
     fn avg_binary_size(&self) -> usize {
-        self.binary_window
-            .lock()
-            .map(|window| window.average())
-            .unwrap_or(64) // Fallback if lock fails
+        let window = self.binary_window.lock().unwrap();
+        window.average()
     }
 }
 
@@ -186,7 +180,7 @@ impl Default for CompressionType {
 }
 
 /// Configuration options for bulk write operations
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct BulkWriteOptions {
     pub compression: CompressionType,
     pub timeout: Duration,
@@ -480,6 +474,30 @@ impl BulkStreamWriter {
         Ok(all_responses)
     }
 
+    /// Allocate a new rows buffer that is bound to this writer's schema
+    /// This ensures schema compatibility and provides optimal performance
+    pub fn alloc_rows_buffer(&self, capacity: usize) -> Result<Rows> {
+        Rows::with_arrow_schema(
+            &self.table_schema,
+            self.arrow_schema.clone(),
+            capacity,
+            self.alloc_stats.clone(),
+        )
+    }
+
+    /// Create a new Row builder that is compatible with this writer's schema
+    /// Returns a RowBuilder that can efficiently build rows for this writer
+    /// Uses O(1) field name lookup for optimal performance
+    #[must_use]
+    pub fn new_row(&self) -> RowBuilder {
+        RowBuilder::new(&self.table_schema, &self.field_map)
+    }
+
+    /// Get the table schema that this writer is bound to
+    pub fn table_schema(&self) -> &[Column] {
+        &self.table_schema
+    }
+
     /// Helper method to handle a single response
     fn handle_single_response(
         &mut self,
@@ -639,30 +657,6 @@ impl BulkStreamWriter {
         }
 
         Ok(())
-    }
-
-    /// Allocate a new rows buffer that is bound to this writer's schema
-    /// This ensures schema compatibility and provides optimal performance
-    pub fn alloc_rows_buffer(&self, capacity: usize) -> Result<Rows> {
-        Rows::with_arrow_schema(
-            &self.table_schema,
-            self.arrow_schema.clone(),
-            capacity,
-            self.alloc_stats.clone(),
-        )
-    }
-
-    /// Create a new Row builder that is compatible with this writer's schema
-    /// Returns a RowBuilder that can efficiently build rows for this writer
-    /// Uses O(1) field name lookup for optimal performance
-    #[must_use]
-    pub fn new_row(&self) -> RowBuilder {
-        RowBuilder::new(&self.table_schema, &self.field_map)
-    }
-
-    /// Get the table schema that this writer is bound to
-    pub fn table_schema(&self) -> &[Column] {
-        &self.table_schema
     }
 
     /// Validate that the provided Rows schema matches the writer's bound schema
@@ -937,8 +931,6 @@ impl RowBatchBuilder {
     pub fn is_empty(&self) -> bool {
         self.current_rows == 0
     }
-
-    // Note: No capacity limits - Arrow builders manage their own memory automatically
 }
 
 /// Trait for type-erased array builders

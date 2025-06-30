@@ -4,7 +4,7 @@ This directory contains comprehensive examples demonstrating two distinct ingest
 
 ## Examples Overview
 
-### 🚀 `insert_example.rs` - Low-Latency Insert API
+### `insert_example.rs` - Low-Latency Insert API
 **Best for**: Real-time applications, IoT sensors, interactive systems
 
 ```bash
@@ -22,7 +22,7 @@ cargo run --example insert_example
 - Comprehensive data type support (JSON, binary, timestamps, etc.)
 - Best practices for low-latency scenarios
 
-### ⚡ `bulk_stream_writer_example.rs` - High-Throughput Bulk API
+### `bulk_stream_writer_example.rs` - High-Throughput Bulk API
 **Best for**: ETL operations, data migration, batch processing, log ingestion
 
 ```bash
@@ -150,9 +150,9 @@ RUST_LOG=info cargo run --example bulk_stream_writer_example
 === Real-time Insert Example ===
 Use case: Low-latency, small batch inserts for real-time applications
 Processing real-time batch 1...
-  ✓ Inserted 2 rows in 12ms (latency: 12.0ms)
+  Inserted 2 rows in 12ms (latency: 12.0ms)
 ...
-✓ Real-time insertion completed successfully!
+Real-time insertion completed successfully!
 ```
 
 ### bulk_stream_writer_example.rs
@@ -160,12 +160,12 @@ Processing real-time batch 1...
 === High-Throughput Bulk Stream Writer Example ===
 [1/2] Sequential Baseline (traditional approach)
   Sequential processing: 100 batches × 1000 rows = 100000 total rows
-  ✓ Sequential: 100000 rows in 45.23s (2211 rows/sec)
+  Sequential: 100000 rows in 45.23s (2211 rows/sec)
 
 [2/2] Parallel Optimization (async submission)
-  ✓ All 100 batches submitted in 2.156s (46 batches/sec)
-  ✓ Parallel: 100000 rows in 15.78s (6340 rows/sec)
-⚡ Speedup: 2.9x faster with parallel approach
+  All 100 batches submitted in 2.156s (46 batches/sec)
+  Parallel: 100000 rows in 15.78s (6340 rows/sec)
+Speedup: 2.9x faster with parallel approach
 ```
 
 ## Understanding the Output

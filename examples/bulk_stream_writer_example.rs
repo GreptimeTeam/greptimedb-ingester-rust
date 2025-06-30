@@ -206,7 +206,7 @@ async fn run_sequential_writes() -> Result<Duration> {
     let throughput = total_rows as f64 / duration.as_secs_f64();
 
     println!(
-        "  ✓ Sequential: {} rows in {:.2}s ({:.0} rows/sec)",
+        "  SUCCESS Sequential: {} rows in {:.2}s ({:.0} rows/sec)",
         total_rows,
         duration.as_secs_f64(),
         throughput
@@ -281,7 +281,7 @@ async fn run_parallel_writes() -> Result<Duration> {
 
     let submit_duration = submit_start.elapsed();
     println!(
-        "  ✓ All {} batches submitted in {:.3}s ({:.0} batches/sec)",
+        "  SUCCESS All {} batches submitted in {:.3}s ({:.0} batches/sec)",
         request_ids.len(),
         submit_duration.as_secs_f64(),
         request_ids.len() as f64 / submit_duration.as_secs_f64()
@@ -304,7 +304,7 @@ async fn run_parallel_writes() -> Result<Duration> {
     let avg_latency = wait_duration.as_millis() as f64 / success_count as f64;
 
     println!(
-        "  ✓ Parallel: {} rows in {:.2}s ({:.0} rows/sec)",
+        "  SUCCESS Parallel: {} rows in {:.2}s ({:.0} rows/sec)",
         total_rows,
         total_duration.as_secs_f64(),
         throughput
@@ -325,11 +325,6 @@ async fn main() -> Result<()> {
     println!("=== High-Throughput Bulk Stream Writer Example ===");
     println!("Use case: ETL, data migration, batch processing, log ingestion");
     println!("When to use: High-volume data, can tolerate higher latency for better throughput");
-    println!();
-    println!("🚀 New API Features Demonstrated:");
-    println!("  • writer.alloc_rows_buffer(): Optimized buffer allocation with schema caching");
-    println!("  • writer.new_row(): Schema-safe row builder with field name validation");
-    println!("  • Arc<Schema> sharing: Zero-cost schema validation for same-writer buffers");
     println!();
 
     // Baseline: traditional sequential approach
@@ -365,42 +360,33 @@ async fn main() -> Result<()> {
             println!("Parallel approach:   {:.2}s", par_dur.as_secs_f64());
 
             if speedup > 1.0 {
-                println!("⚡ Speedup: {speedup:.1}x faster with parallel approach");
+                println!("PERFORMANCE Speedup: {speedup:.1}x faster with parallel approach");
             } else {
                 println!(
-                    "⚠️  Sequential was {:.1}x faster (network may be bottleneck)",
+                    "WARNING Sequential was {:.1}x faster (network may be bottleneck)",
                     1.0 / speedup
                 );
             }
 
             let efficiency = (speedup - 1.0) / 15.0 * 100.0; // 16 parallel vs 1 = theoretical 16x
             println!(
-                "📊 Parallel efficiency: {:.0}% of theoretical maximum",
+                "STATS Parallel efficiency: {:.0}% of theoretical maximum",
                 efficiency.max(0.0)
             );
         }
-        _ => println!("❌ Could not complete performance comparison"),
+        _ => println!("ERROR Could not complete performance comparison"),
     }
 
     println!();
     println!("=== BulkStreamWriter API Summary ===");
-    println!("🔄 write_rows():                Submit batch and wait for completion (traditional)");
-    println!("⚡ write_rows_async():          Submit batch without waiting, returns request_id");
-    println!("🚀 alloc_rows_buffer():         Allocate optimized buffer with shared schema");
-    println!("🛡️  new_row():                 Create schema-safe row builder with field names");
-    println!("🔍 wait_for_response(id):  Wait for specific request by ID");
-    println!("⏳ wait_for_all_pending(): Wait for all submitted requests");
-    println!("🏁 finish():               Close connection, discard remaining responses");
-    println!("📦 finish_with_responses(): Close connection, return ALL responses");
-
-    println!();
-    println!("=== Best Practices for High Throughput ===");
-    println!("• Use parallelism=8-16 for network-bound workloads");
-    println!("• Batch 500-2000 rows per request for optimal performance");
-    println!("• Use write_rows_async() + wait_for_all_pending() for maximum throughput");
-    println!("• Enable compression for better network utilization");
-    println!("• Monitor memory usage when submitting many async requests");
-    println!("• Consider backpressure control for very high-volume scenarios");
+    println!("write_rows():                Submit batch and wait for completion (traditional)");
+    println!("write_rows_async():          Submit batch without waiting, returns request_id");
+    println!("alloc_rows_buffer():         Allocate optimized buffer with shared schema");
+    println!("new_row():                   Create schema-safe row builder with field names");
+    println!("wait_for_response(id):       Wait for specific request by ID");
+    println!("wait_for_all_pending():      Wait for all submitted requests");
+    println!("finish():                    Close connection, discard remaining responses");
+    println!("finish_with_responses():     Close connection, return ALL responses");
 
     Ok(())
 }

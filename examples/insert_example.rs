@@ -59,7 +59,7 @@ pub async fn realtime_sensor_ingest() -> Result<()> {
         let latency = start_time.elapsed();
 
         println!(
-            "  ✓ Inserted {} rows in {:?} (latency: {:.1}ms)",
+            "  [SUCCESS] Inserted {} rows in {:?} (latency: {:.1}ms)",
             affected_rows,
             latency,
             latency.as_millis()
@@ -69,7 +69,7 @@ pub async fn realtime_sensor_ingest() -> Result<()> {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
-    println!("\n✓ Real-time insertion completed successfully!");
+    println!("\n[SUCCESS] Real-time insertion completed successfully!");
     Ok(())
 }
 
@@ -216,7 +216,7 @@ pub async fn data_types_demonstration() -> Result<()> {
     let affected_rows = database.insert(insert_request).await?;
     let latency = start_time.elapsed();
 
-    println!("✓ Successfully inserted {affected_rows} rows with various data types");
+    println!("[SUCCESS] Successfully inserted {affected_rows} rows with various data types");
     println!("  Insertion latency: {:.1}ms", latency.as_millis());
 
     Ok(())

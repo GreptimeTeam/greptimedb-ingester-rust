@@ -102,9 +102,9 @@ main() {
     local test_result=$?
     
     if [ $test_result -eq 0 ]; then
-        echo_info "✅ All integration tests passed!"
+        echo_info "All integration tests passed!"
     else
-        echo_error "❌ Some integration tests failed!"
+        echo_error "Some integration tests failed!"
         exit $test_result
     fi
 }
