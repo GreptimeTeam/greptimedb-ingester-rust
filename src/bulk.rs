@@ -347,6 +347,54 @@ impl BulkStreamWriter {
         Ok(responses)
     }
 
+    /// Flush completed responses from cache and return them
+    ///
+    /// This method removes all cached responses that have been processed
+    /// but not yet retrieved, and returns them to the caller.
+    /// Useful for long-running bulk operations to prevent excessive
+    /// memory usage while still allowing access to response data.
+    ///
+    /// Returns a vector of completed responses that were flushed.
+    pub fn flush_completed_responses(&mut self) -> Vec<DoPutResponse> {
+        let responses = std::mem::take(&mut self.completed_responses);
+        responses.into_values().collect()
+    }
+
+    /// Finish the bulk write operation and close the connection
+    pub async fn finish(self) -> Result<()> {
+        let _responses = self.finish_with_responses().await?;
+        // Discard responses since finish() doesn't return them
+        Ok(())
+    }
+
+    /// Finish the bulk write operation and return all responses
+    pub async fn finish_with_responses(mut self) -> Result<Vec<DoPutResponse>> {
+        let mut all_responses = Vec::new();
+
+        // First, collect any already cached responses
+        let completed_responses = std::mem::take(&mut self.completed_responses);
+        for (request_id, response) in completed_responses {
+            // Remove from pending_requests if it exists, but collect the response regardless
+            // This handles both normal cases and orphaned responses
+            self.pending_requests.remove(&request_id);
+            all_responses.push(response);
+        }
+
+        // Then wait for any remaining pending requests
+        if !self.pending_requests.is_empty() {
+            let remaining_responses = self.wait_for_all_pending().await?;
+            all_responses.extend(remaining_responses);
+        }
+
+        // Close the sender to signal the end of the stream
+        self.sender
+            .close()
+            .await
+            .map_err(|_| error::CloseSenderSnafu.build())?;
+
+        Ok(all_responses)
+    }
+
     /// Helper method to handle a single response
     fn handle_single_response(
         &mut self,
@@ -657,41 +705,6 @@ impl BulkStreamWriter {
         }
 
         Ok(arrays)
-    }
-
-    /// Finish the bulk write operation and close the connection
-    pub async fn finish(self) -> Result<()> {
-        let _responses = self.finish_with_responses().await?;
-        // Discard responses since finish() doesn't return them
-        Ok(())
-    }
-
-    /// Finish the bulk write operation and return all responses
-    pub async fn finish_with_responses(mut self) -> Result<Vec<DoPutResponse>> {
-        let mut all_responses = Vec::new();
-
-        // First, collect any already cached responses
-        let completed_responses = std::mem::take(&mut self.completed_responses);
-        for (request_id, response) in completed_responses {
-            // Remove from pending_requests if it exists, but collect the response regardless
-            // This handles both normal cases and orphaned responses
-            self.pending_requests.remove(&request_id);
-            all_responses.push(response);
-        }
-
-        // Then wait for any remaining pending requests
-        if !self.pending_requests.is_empty() {
-            let remaining_responses = self.wait_for_all_pending().await?;
-            all_responses.extend(remaining_responses);
-        }
-
-        // Close the sender to signal the end of the stream
-        self.sender
-            .close()
-            .await
-            .map_err(|_| error::CloseSenderSnafu.build())?;
-
-        Ok(all_responses)
     }
 
     fn next_request_id(&mut self) -> RequestId {
