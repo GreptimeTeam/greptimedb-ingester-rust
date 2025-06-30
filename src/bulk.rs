@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tokio::select;
@@ -48,6 +49,99 @@ use crate::{error, Result};
 use snafu::{ensure, ResultExt};
 
 pub type RequestId = i64;
+
+/// Sliding window for tracking recent size samples
+/// Optimized version with running sum to avoid O(n) average calculation
+#[derive(Debug)]
+struct SlidingWindow {
+    samples: Vec<usize>,
+    capacity: usize,
+    current_index: usize,
+    count: usize,
+    sum: usize,
+}
+
+impl SlidingWindow {
+    fn new(capacity: usize) -> Self {
+        Self {
+            samples: vec![0; capacity],
+            capacity,
+            current_index: 0,
+            count: 0,
+            sum: 0,
+        }
+    }
+
+    fn add_sample(&mut self, size: usize) {
+        let old_value = self.samples[self.current_index];
+
+        // Update running sum
+        if self.count == self.capacity {
+            // Window is full, subtract the value being replaced
+            self.sum = self.sum.saturating_sub(old_value).saturating_add(size);
+        } else {
+            // Window not full yet
+            self.sum = self.sum.saturating_add(size);
+            self.count += 1;
+        }
+
+        self.samples[self.current_index] = size;
+        self.current_index = (self.current_index + 1) % self.capacity;
+    }
+
+    fn average(&self) -> usize {
+        if self.count == 0 {
+            return 64; // Default fallback for empty window
+        }
+
+        let avg = self.sum / self.count;
+        // Clamp to reasonable bounds: min 4 bytes (very short strings), max 8KB (large JSON/text)
+        // This prevents excessive over-allocation while still allowing for larger data
+        avg.clamp(4, 8192)
+    }
+}
+
+/// Adaptive memory allocation statistics for string/binary data using sliding windows
+#[derive(Debug)]
+pub struct AdaptiveAllocStats {
+    string_window: Mutex<SlidingWindow>,
+    binary_window: Mutex<SlidingWindow>,
+}
+
+impl AdaptiveAllocStats {
+    pub fn new(window_size: usize) -> Self {
+        Self {
+            string_window: Mutex::new(SlidingWindow::new(window_size)),
+            binary_window: Mutex::new(SlidingWindow::new(window_size)),
+        }
+    }
+
+    fn record_string(&self, size: usize) {
+        if let Ok(mut window) = self.string_window.lock() {
+            window.add_sample(size);
+        }
+    }
+
+    fn record_binary(&self, size: usize) {
+        if let Ok(mut window) = self.binary_window.lock() {
+            window.add_sample(size);
+        }
+    }
+
+    fn avg_string_size(&self) -> usize {
+        self.string_window
+            .lock()
+            .map(|window| window.average())
+            .unwrap_or(64) // Fallback if lock fails
+    }
+
+    fn avg_binary_size(&self) -> usize {
+        self.binary_window
+            .lock()
+            .map(|window| window.average())
+            .unwrap_or(64) // Fallback if lock fails
+    }
+}
 
 /// High-level bulk inserter for GreptimeDB
 #[derive(Clone)]
@@ -97,6 +191,7 @@ pub struct BulkWriteOptions {
     pub compression: CompressionType,
     pub timeout: Duration,
     pub parallelism: usize,
+    pub adaptive_alloc_window_size: usize,
 }
 
 impl Default for BulkWriteOptions {
@@ -104,7 +199,8 @@ impl Default for BulkWriteOptions {
         Self {
             compression: CompressionType::default(),
             timeout: Duration::from_secs(60),
-            parallelism: 1,
+            parallelism: 4,
+            adaptive_alloc_window_size: 32,
         }
     }
 }
@@ -150,6 +246,8 @@ pub struct BulkStreamWriter {
     pending_requests: HashMap<RequestId, Instant>,
     // Cache completed responses that were processed but not yet retrieved
     completed_responses: HashMap<RequestId, DoPutResponse>,
+    // Adaptive memory allocation statistics
+    alloc_stats: Arc<AdaptiveAllocStats>,
 }
 
 impl BulkStreamWriter {
@@ -201,6 +299,7 @@ impl BulkStreamWriter {
             timeout: options.timeout,
             pending_requests: HashMap::new(),
             completed_responses: HashMap::new(),
+            alloc_stats: Arc::new(AdaptiveAllocStats::new(options.adaptive_alloc_window_size)),
         })
     }
 
@@ -545,7 +644,12 @@ impl BulkStreamWriter {
     /// Allocate a new rows buffer that is bound to this writer's schema
     /// This ensures schema compatibility and provides optimal performance
     pub fn alloc_rows_buffer(&self, capacity: usize) -> Result<Rows> {
-        Rows::with_schema(&self.table_schema, self.arrow_schema.clone(), capacity)
+        Rows::with_arrow_schema(
+            &self.table_schema,
+            self.arrow_schema.clone(),
+            capacity,
+            self.alloc_stats.clone(),
+        )
     }
 
     /// Create a new Row builder that is compatible with this writer's schema
@@ -679,21 +783,30 @@ pub struct Rows {
 
 impl Rows {
     /// Create a new Rows collection with the given schema and capacity
-    pub fn new(table_schema: &[Column], capacity: usize) -> Result<Self> {
-        let builder = RowBatchBuilder::new(table_schema, capacity)?;
+    pub fn new(
+        table_schema: &[Column],
+        capacity: usize,
+        alloc_stats: Arc<AdaptiveAllocStats>,
+    ) -> Result<Self> {
+        let builder = RowBatchBuilder::new(table_schema, capacity, alloc_stats)?;
         let schema = builder.schema.clone();
 
         Ok(Self { builder, schema })
     }
 
     /// Create a new Rows collection with a pre-computed Arrow schema
-    /// This is more efficient when the Arrow schema is already available
-    fn with_schema(
+    fn with_arrow_schema(
         table_schema: &[Column],
         arrow_schema: Arc<Schema>,
         capacity: usize,
+        alloc_stats: Arc<AdaptiveAllocStats>,
     ) -> Result<Self> {
-        let builder = RowBatchBuilder::with_schema(table_schema, arrow_schema.clone(), capacity)?;
+        let builder = RowBatchBuilder::with_arrow_schema(
+            table_schema,
+            arrow_schema.clone(),
+            capacity,
+            alloc_stats,
+        )?;
 
         Ok(Self {
             builder,
@@ -745,7 +858,11 @@ pub struct RowBatchBuilder {
 
 impl RowBatchBuilder {
     /// Create a new RowBatchBuilder with the given schema and capacity
-    pub fn new(table_schema: &[Column], capacity: usize) -> Result<Self> {
+    fn new(
+        table_schema: &[Column],
+        capacity: usize,
+        alloc_stats: Arc<AdaptiveAllocStats>,
+    ) -> Result<Self> {
         let fields: Result<Vec<Field>> = table_schema
             .iter()
             .map(|col| {
@@ -757,7 +874,7 @@ impl RowBatchBuilder {
 
         let builders: Result<Vec<Box<dyn ArrayBuilder>>> = table_schema
             .iter()
-            .map(|col| create_array_builder(col.data_type, capacity))
+            .map(|col| create_array_builder_adaptive(col.data_type, capacity, alloc_stats.clone()))
             .collect();
 
         Ok(Self {
@@ -768,10 +885,15 @@ impl RowBatchBuilder {
     }
 
     /// Create a new RowBatchBuilder with a pre-computed Arrow schema
-    fn with_schema(table_schema: &[Column], schema: Arc<Schema>, capacity: usize) -> Result<Self> {
+    fn with_arrow_schema(
+        table_schema: &[Column],
+        schema: Arc<Schema>,
+        capacity: usize,
+        alloc_stats: Arc<AdaptiveAllocStats>,
+    ) -> Result<Self> {
         let builders: Result<Vec<Box<dyn ArrayBuilder>>> = table_schema
             .iter()
-            .map(|col| create_array_builder(col.data_type, capacity))
+            .map(|col| create_array_builder_adaptive(col.data_type, capacity, alloc_stats.clone()))
             .collect();
 
         Ok(Self {
@@ -825,10 +947,11 @@ trait ArrayBuilder {
     fn finish(&mut self) -> Result<Arc<dyn Array>>;
 }
 
-/// Create an array builder for the given column data type
-fn create_array_builder(
+/// Create an array builder for the given column data type with adaptive sizing
+fn create_array_builder_adaptive(
     data_type: ColumnDataType,
     capacity: usize,
+    alloc_stats: Arc<AdaptiveAllocStats>,
 ) -> Result<Box<dyn ArrayBuilder>> {
     Ok(match data_type {
         ColumnDataType::Boolean => Box::new(TypedArrayBuilder::<BooleanBuilder>::new(
@@ -864,12 +987,12 @@ fn create_array_builder(
         ColumnDataType::Float64 => Box::new(TypedArrayBuilder::<Float64Builder>::new(
             Float64Builder::with_capacity(capacity),
         )),
-        ColumnDataType::String => Box::new(TypedArrayBuilder::<StringBuilder>::new(
-            StringBuilder::with_capacity(capacity, capacity * 64),
-        )),
-        ColumnDataType::Binary => Box::new(TypedArrayBuilder::<BinaryBuilder>::new(
-            BinaryBuilder::with_capacity(capacity, capacity * 64),
-        )),
+        ColumnDataType::String => {
+            Box::new(AdaptiveStringBuilder::new(capacity, alloc_stats.clone()))
+        }
+        ColumnDataType::Binary => {
+            Box::new(AdaptiveBinaryBuilder::new(capacity, alloc_stats.clone()))
+        }
         ColumnDataType::Date => Box::new(TypedArrayBuilder::<Date32Builder>::new(
             Date32Builder::with_capacity(capacity),
         )),
@@ -916,8 +1039,10 @@ fn create_array_builder(
                 Time64NanosecondBuilder::with_capacity(capacity),
             ))
         }
-        ColumnDataType::Decimal128 => Box::new(BinaryArrayBuilder::new(capacity)),
-        ColumnDataType::Json => Box::new(BinaryArrayBuilder::new(capacity)),
+        ColumnDataType::Decimal128 => {
+            Box::new(AdaptiveBinaryBuilder::new(capacity, alloc_stats.clone()))
+        }
+        ColumnDataType::Json => Box::new(AdaptiveBinaryBuilder::new(capacity, alloc_stats.clone())),
         _ => {
             return error::UnsupportedDataTypeSnafu {
                 data_type: format!("{data_type:?}. Not supported in RowBatchBuilder"),
@@ -938,15 +1063,34 @@ impl<T> TypedArrayBuilder<T> {
     }
 }
 
-/// Specialized binary array builder for Decimal128 and JSON
-struct BinaryArrayBuilder {
-    builder: BinaryBuilder,
+/// Adaptive string array builder that learns from historical data
+struct AdaptiveStringBuilder {
+    builder: StringBuilder,
+    alloc_stats: Arc<AdaptiveAllocStats>,
 }
 
-impl BinaryArrayBuilder {
-    fn new(capacity: usize) -> Self {
+impl AdaptiveStringBuilder {
+    fn new(capacity: usize, alloc_stats: Arc<AdaptiveAllocStats>) -> Self {
+        let avg_size = alloc_stats.avg_string_size();
         Self {
-            builder: BinaryBuilder::with_capacity(capacity, capacity * 64),
+            builder: StringBuilder::with_capacity(capacity, capacity * avg_size),
+            alloc_stats,
+        }
+    }
+}
+
+/// Adaptive binary array builder that learns from historical data
+struct AdaptiveBinaryBuilder {
+    builder: BinaryBuilder,
+    alloc_stats: Arc<AdaptiveAllocStats>,
+}
+
+impl AdaptiveBinaryBuilder {
+    fn new(capacity: usize, alloc_stats: Arc<AdaptiveAllocStats>) -> Self {
+        let avg_size = alloc_stats.avg_binary_size();
+        Self {
+            builder: BinaryBuilder::with_capacity(capacity, capacity * avg_size),
+            alloc_stats,
         }
     }
 }
@@ -1022,10 +1166,32 @@ impl ArrayBuilder for TypedArrayBuilder<BinaryBuilder> {
     }
 }
 
-impl ArrayBuilder for BinaryArrayBuilder {
+impl ArrayBuilder for AdaptiveStringBuilder {
+    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
+        match row.get_string(col_idx) {
+            Some(val) => {
+                // Record the size for future optimization
+                self.alloc_stats.record_string(val.len());
+                self.builder.append_value(val);
+            }
+            None => self.builder.append_null(),
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<Arc<dyn Array>> {
+        Ok(Arc::new(self.builder.finish()))
+    }
+}
+
+impl ArrayBuilder for AdaptiveBinaryBuilder {
     fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
         match row.get_binary(col_idx) {
-            Some(val) => self.builder.append_value(val),
+            Some(val) => {
+                // Record the size for future optimization
+                self.alloc_stats.record_binary(val.len());
+                self.builder.append_value(val);
+            }
             None => self.builder.append_null(),
         }
         Ok(())
@@ -1176,10 +1342,11 @@ mod tests {
         ];
 
         // Test 1: Compatible rows should work
-        let rows1 = Rows::new(&schema1, 10).expect("Failed to create rows1");
+        let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
+        let rows1 = Rows::new(&schema1, 10, alloc_stats.clone()).expect("Failed to create rows1");
 
         // Test 2: Incompatible rows should fail validation
-        let rows2 = Rows::new(&schema2, 10).expect("Failed to create rows2");
+        let rows2 = Rows::new(&schema2, 10, alloc_stats).expect("Failed to create rows2");
 
         // Mock the validation (since we can't easily create a BulkStreamWriter in tests)
         // In practice, this would be tested with a real BulkStreamWriter
@@ -1205,7 +1372,8 @@ mod tests {
             },
         ];
 
-        let mut rows = Rows::new(&schema, 5).expect("Failed to create rows");
+        let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
+        let mut rows = Rows::new(&schema, 5, alloc_stats).expect("Failed to create rows");
 
         // Test initial state
         assert_eq!(rows.len(), 0);
@@ -1282,5 +1450,99 @@ mod tests {
         let invalid_builder = RowBuilder::new(&schema, &field_map);
         let result = invalid_builder.set("invalid_field", Value::String("test".to_string()));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sliding_window_average() {
+        let mut window = SlidingWindow::new(3);
+
+        // Test empty window
+        assert_eq!(window.average(), 64); // Default fallback
+
+        // Add samples
+        window.add_sample(100);
+        assert_eq!(window.average(), 100);
+
+        window.add_sample(200);
+        assert_eq!(window.average(), 150); // (100 + 200) / 2
+
+        window.add_sample(300);
+        assert_eq!(window.average(), 200); // (100 + 200 + 300) / 3
+
+        // Test window wrap-around
+        window.add_sample(400); // Replaces 100
+        assert_eq!(window.average(), 300); // (200 + 300 + 400) / 3
+
+        window.add_sample(500); // Replaces 200
+        assert_eq!(window.average(), 400); // (300 + 400 + 500) / 3
+    }
+
+    #[test]
+    fn test_adaptive_alloc_stats() {
+        let stats = AdaptiveAllocStats::new(16);
+
+        // Test initial defaults
+        assert_eq!(stats.avg_string_size(), 64);
+        assert_eq!(stats.avg_binary_size(), 64);
+
+        // Record some samples
+        stats.record_string(100);
+        stats.record_string(200);
+        stats.record_binary(150);
+        stats.record_binary(250);
+
+        // Test averages
+        assert_eq!(stats.avg_string_size(), 150); // (100 + 200) / 2
+        assert_eq!(stats.avg_binary_size(), 200); // (150 + 250) / 2
+    }
+
+    #[test]
+    fn test_sliding_window_optimization() {
+        let mut window = SlidingWindow::new(3);
+
+        // Test initial state
+        assert_eq!(window.average(), 64); // Default fallback
+
+        // Add samples and verify averages
+        window.add_sample(100);
+        assert_eq!(window.average(), 100);
+
+        window.add_sample(200);
+        assert_eq!(window.average(), 150);
+
+        window.add_sample(300);
+        assert_eq!(window.average(), 200);
+
+        // Test overflow behavior with running sum
+        window.add_sample(600); // Replaces 100, sum should be 200+300+600=1100
+        assert_eq!(window.average(), 366); // 1100/3 = 366.67 -> 366
+
+        // Test saturation protection
+        window.add_sample(usize::MAX);
+        // Should not panic due to saturating arithmetic
+        let _avg = window.average();
+    }
+
+    #[test]
+    fn test_sliding_window_bounds() {
+        let mut window = SlidingWindow::new(3);
+
+        // Test lower bound clamping
+        window.add_sample(1); // Very small value
+        window.add_sample(2);
+        window.add_sample(3);
+        assert_eq!(window.average(), 4); // Should be clamped to minimum 4
+
+        // Test upper bound clamping
+        let mut large_window = SlidingWindow::new(2);
+        large_window.add_sample(10000); // 10KB
+        large_window.add_sample(20000); // 20KB
+        assert_eq!(large_window.average(), 8192); // Should be clamped to maximum 8KB
+
+        // Test normal range
+        let mut normal_window = SlidingWindow::new(2);
+        normal_window.add_sample(100);
+        normal_window.add_sample(200);
+        assert_eq!(normal_window.average(), 150); // Should not be clamped
     }
 }

@@ -203,6 +203,8 @@ Each `BulkStreamWriter` is bound to a specific table schema, providing both safe
 
 ```rust,no_run
 # use greptimedb_ingester::{BulkStreamWriter, Rows};
+# use greptimedb_ingester::bulk::AdaptiveAllocStats;
+# use std::sync::Arc;
 # async fn example(bulk_writer: &BulkStreamWriter, table_schema: &[greptimedb_ingester::Column]) -> greptimedb_ingester::Result<()> {
 // Recommended: Use writer-bound buffer allocation
 let mut rows = bulk_writer.alloc_rows_buffer(1000)?;
@@ -210,7 +212,8 @@ let mut rows = bulk_writer.alloc_rows_buffer(1000)?;
 // ✓ Automatic schema compatibility
 
 // Alternative: Direct allocation (legacy approach)
-let mut rows = Rows::new(table_schema, 1000)?;
+let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
+let mut rows = Rows::new(table_schema, 1000, alloc_stats)?;
 // ⚠ Requires schema conversion and validation overhead
 # Ok(())
 # }
