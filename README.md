@@ -47,7 +47,7 @@ let affected_rows = database.insert(insert_request).await?;
 **Best for**: ETL operations, data migration, batch processing, log ingestion
 
 ```rust,no_run
-use greptimedb_ingester::{BulkInserter, BulkWriteOptions, ColumnDataType, Row, Table, Value};
+use greptimedb_ingester::{BulkInserter, BulkWriteOptions, ColumnDataType, CompressionType, Row, Table, Value};
 use greptimedb_ingester::api::v1::*;
 use greptimedb_ingester::helpers::schema::*;
 use greptimedb_ingester::helpers::values::*;
@@ -57,8 +57,10 @@ use std::time::Duration;
 
 # async fn example() -> greptimedb_ingester::Result<()> {
 # let client = Client::with_urls(&["localhost:4001"]);
-# let data_batches: Vec<Vec<greptimedb_ingester::Row>> = vec![];
+# let data_batches: Vec<greptimedb_ingester::Rows> = vec![];
 # let current_timestamp = || 1234567890000i64;
+# struct SensorData { timestamp: i64, device_id: String, temperature: f64 }
+# let sensor_data: Vec<SensorData> = vec![];  // Mock sensor data for examples
 
 // Step 1: Create table manually (bulk API requires table to exist beforehand)
 // Option A: Use insert API to create table
@@ -112,17 +114,35 @@ let mut bulk_writer = bulk_inserter
         &table_template,
         Some(BulkWriteOptions::default()
             .with_parallelism(8)            // 8 concurrent requests
-            .with_compression(true)         // Enable compression
-            .with_timeout(Duration::from_secs(60))  // 60s timeout
+            .with_compression(CompressionType::Zstd) // Enable Zstandard compression
+            .with_timeout(Duration::from_secs(60))   // 60s timeout
         ),
     )
     .await?;
 
-// High-throughput parallel writing
-for batch in data_batches {
-    let request_id = bulk_writer.write_rows_async(batch).await?;
-    // Requests are processed in parallel
+// Method 1: Optimized API (recommended for production)
+let mut rows1 = bulk_writer.alloc_rows_buffer(1000)?;  // Shares schema Arc
+for data in &sensor_data {
+    let row = Row::new().add_values(vec![
+        Value::Timestamp(data.timestamp),
+        Value::String(data.device_id.clone()),
+        Value::Float64(data.temperature),
+    ]);
+    rows1.add_row(&row)?;
 }
+let request_id1 = bulk_writer.write_rows_async(rows1).await?;
+
+// Method 2: Schema-safe API
+let mut rows2 = bulk_writer.alloc_rows_buffer(1000)?;
+for data in &sensor_data {
+    let row = bulk_writer.new_row()
+        .set("ts", Value::Timestamp(data.timestamp))?
+        .set("device_id", Value::String(data.device_id.clone()))?
+        .set("temperature", Value::Float64(data.temperature))?
+        .build()?;
+    rows2.add_row(&row)?;
+}
+let request_id2 = bulk_writer.write_rows_async(rows2).await?;
 
 // Wait for all operations to complete
 let responses = bulk_writer.wait_for_all_pending().await?;
@@ -168,6 +188,71 @@ Run with: `cargo run --example bulk_stream_writer_example`
 - **Async submission patterns**: Demonstrates `write_rows_async()` for maximum throughput
 - **Best practices**: Optimal configuration for high-volume scenarios
 
+## API Design & Optimization
+
+### Schema-Bound Writer
+
+Each `BulkStreamWriter` is bound to a specific table schema, providing both safety and performance benefits:
+
+- **Schema Validation**: Automatic validation ensures data consistency
+- **Zero-Cost Optimization**: Schema-bound buffers share `Arc<Schema>` for ultra-fast validation  
+- **Type Safety**: Prevents common mistakes like field order errors
+- **Dynamic Growth**: Arrow builders automatically expand capacity as needed
+
+### Buffer Allocation
+
+```rust,no_run
+# use greptimedb_ingester::{BulkStreamWriter, Rows};
+# async fn example(bulk_writer: &BulkStreamWriter, table_schema: &[greptimedb_ingester::Column]) -> greptimedb_ingester::Result<()> {
+// Recommended: Use writer-bound buffer allocation
+let mut rows = bulk_writer.alloc_rows_buffer(1000)?;
+// ✓ Shares Arc<Schema> with writer for optimal performance
+// ✓ Automatic schema compatibility
+
+// Alternative: Direct allocation (legacy approach)
+let mut rows = Rows::new(table_schema, 1000)?;
+// ⚠ Requires schema conversion and validation overhead
+# Ok(())
+# }
+```
+
+### Row Building APIs
+
+**Fast API (production recommended):**
+```rust,no_run
+# use greptimedb_ingester::{Row, Value};
+# let ts = 1234567890i64;
+# let device_id = "device001".to_string();
+# let temperature = 25.0f64;
+let row = Row::new().add_values(vec![
+    Value::Timestamp(ts),
+    Value::String(device_id),
+    Value::Float64(temperature),
+]);
+// ✓ Fastest performance
+// ⚠ Requires correct field order
+```
+
+**Safe API (development recommended):**
+```rust,no_run
+# use greptimedb_ingester::{BulkStreamWriter, Value};
+# async fn example(bulk_writer: &BulkStreamWriter) -> greptimedb_ingester::Result<()> {
+# let ts = 1234567890i64;
+# let device_id = "device001".to_string();
+# let temperature = 25.0f64;
+let row = bulk_writer.new_row()
+    .set("timestamp", Value::Timestamp(ts))?
+    .set("device_id", Value::String(device_id))?
+    .set("temperature", Value::Float64(temperature))?
+    .build()?;
+// ✓ O(1) field name lookup (HashMap-based)
+// ✓ Field name validation
+// ✓ Prevents field order mistakes
+// ✓ Compile-time safety
+# Ok(())
+# }
+```
+
 ## Performance Characteristics
 
 ### Low-Latency Insert API
@@ -190,7 +275,7 @@ The bulk API supports true parallelism through async request submission:
 
 ```rust,no_run
 # use greptimedb_ingester::Row;
-# async fn example(bulk_writer: &mut greptimedb_ingester::BulkStreamWriter, batches: Vec<Vec<greptimedb_ingester::Row>>) -> greptimedb_ingester::Result<()> {
+# async fn example(bulk_writer: &mut greptimedb_ingester::BulkStreamWriter, batches: Vec<greptimedb_ingester::Rows>) -> greptimedb_ingester::Result<()> {
 // Submit multiple batches without waiting
 let mut request_ids = Vec::new();
 for batch in batches {

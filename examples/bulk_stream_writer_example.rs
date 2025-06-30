@@ -23,18 +23,94 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use greptimedb_ingester::client::Client;
 use greptimedb_ingester::{
-    BulkInserter, BulkWriteOptions, ColumnDataType, Result, Row, Table, Value,
+    BulkInserter, BulkStreamWriter, BulkWriteOptions, Column, ColumnDataType, CompressionType,
+    Result, Row, Rows, Table, Value,
 };
 
-/// Generate realistic time-series data for bulk ingestion testing
-/// Simulates IoT sensor readings with device IDs, temperatures, and status codes
-fn create_test_rows(batch_id: usize, rows_per_batch: usize) -> Vec<Row> {
+/// Generate test data using the optimized schema-bound buffer API
+/// This method provides the best performance by reusing the writer's cached schema
+fn create_test_rows_optimized(
+    writer: &BulkStreamWriter,
+    batch_id: usize,
+    rows_per_batch: usize,
+) -> Result<Rows> {
     let current_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64;
 
-    let mut rows = Vec::with_capacity(rows_per_batch);
+    // Use the writer's optimized buffer allocation - this shares the Arc<Schema>
+    let mut rows = writer.alloc_rows_buffer(rows_per_batch)?;
+
+    for i in 0..rows_per_batch {
+        let global_idx = batch_id * rows_per_batch + i;
+        let timestamp = current_time + (global_idx as i64 * 50);
+        let device_id = format!("sensor_{:06}", global_idx % 1000);
+        let temperature = 18.0 + (global_idx as f64 * 0.03) % 25.0;
+        let status = if global_idx % 100 == 0 { 0 } else { 1 };
+
+        // Traditional approach: build row by index (fast but error-prone)
+        let row = Row::new().add_values(vec![
+            Value::Timestamp(timestamp),
+            Value::String(device_id),
+            Value::Float64(temperature),
+            Value::Int64(status),
+        ]);
+        rows.add_row(&row)?;
+    }
+
+    Ok(rows)
+}
+
+/// Generate test data using the schema-safe RowBuilder API
+/// This method is the safest as it prevents field order mistakes
+fn create_test_rows_safe(
+    writer: &BulkStreamWriter,
+    batch_id: usize,
+    rows_per_batch: usize,
+) -> Result<Rows> {
+    let current_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+
+    let mut rows = writer.alloc_rows_buffer(rows_per_batch)?;
+
+    for i in 0..rows_per_batch {
+        let global_idx = batch_id * rows_per_batch + i;
+        let timestamp = current_time + (global_idx as i64 * 50);
+        let device_id = format!("safe_sensor_{:06}", global_idx % 1000);
+        let temperature = 18.0 + (global_idx as f64 * 0.03) % 25.0;
+        let status = if global_idx % 100 == 0 { 0 } else { 1 };
+
+        // Schema-safe approach: build row by field name (safest)
+        let row = writer
+            .new_row()
+            .set("ts", Value::Timestamp(timestamp))?
+            .set("sensor_id", Value::String(device_id))?
+            .set("temperature", Value::Float64(temperature))?
+            .set("sensor_status", Value::Int64(status))?
+            .build()?;
+
+        rows.add_row(&row)?;
+    }
+
+    Ok(rows)
+}
+
+/// Generate realistic time-series data for bulk ingestion testing (legacy approach)
+/// Simulates IoT sensor readings with device IDs, temperatures, and status codes
+fn create_test_rows(
+    batch_id: usize,
+    rows_per_batch: usize,
+    table_schema: &[Column],
+) -> Result<Rows> {
+    let current_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+
+    let mut rows = Rows::new(table_schema, rows_per_batch)?;
     for i in 0..rows_per_batch {
         let global_idx = batch_id * rows_per_batch + i;
         let timestamp = current_time + (global_idx as i64 * 50); // 50ms intervals
@@ -44,15 +120,16 @@ fn create_test_rows(batch_id: usize, rows_per_batch: usize) -> Vec<Row> {
 
         // Row values must match table_template column order exactly:
         // Index 0: ts (timestamp), Index 1: sensor_id, Index 2: temperature, Index 3: sensor_status
-        rows.push(Row::new().add_values(vec![
+        let row = Row::new().add_values(vec![
             Value::Timestamp(timestamp), // Index 0: ts
             Value::String(device_id),    // Index 1: sensor_id
             Value::Float64(temperature), // Index 2: temperature
             Value::Int64(status),        // Index 3: sensor_status
-        ]));
+        ]);
+        rows.add_row(&row)?;
     }
 
-    rows
+    Ok(rows)
 }
 
 /// Demonstrates traditional sequential bulk writing (baseline performance)
@@ -79,7 +156,7 @@ async fn run_sequential_writes() -> Result<Duration> {
             &table_template,
             Some(
                 BulkWriteOptions::default()
-                    .with_compression(true)
+                    .with_compression(CompressionType::Zstd)
                     .with_parallelism(1) // Single in-flight request
                     .with_timeout(Duration::from_secs(30)), // Using Duration for clearer API
             ),
@@ -99,7 +176,13 @@ async fn run_sequential_writes() -> Result<Duration> {
     );
 
     for batch_num in 0..batch_count {
-        let rows = create_test_rows(batch_num, rows_per_batch);
+        // Demonstrate the optimized API (recommended for production)
+        let rows = if batch_num % 2 == 0 {
+            create_test_rows_optimized(&bulk_writer, batch_num, rows_per_batch)?
+        } else {
+            // Fallback to legacy API for comparison
+            create_test_rows(batch_num, rows_per_batch, bulk_writer.table_schema())?
+        };
         let response = bulk_writer.write_rows(rows).await?;
         total_rows += response.affected_rows();
 
@@ -152,7 +235,7 @@ async fn run_parallel_writes() -> Result<Duration> {
             &table_template,
             Some(
                 BulkWriteOptions::default()
-                    .with_compression(true)
+                    .with_compression(CompressionType::Zstd)
                     .with_parallelism(16) // High concurrency for maximum throughput
                     .with_timeout(Duration::from_secs(60)), // 60 second timeout
             ),
@@ -176,7 +259,12 @@ async fn run_parallel_writes() -> Result<Duration> {
     let submit_start = Instant::now();
 
     for batch_num in 0..batch_count {
-        let rows = create_test_rows(batch_num, rows_per_batch);
+        // Demonstrate different API approaches
+        let rows = match batch_num % 3 {
+            0 => create_test_rows_optimized(&bulk_writer, batch_num, rows_per_batch)?,
+            1 => create_test_rows_safe(&bulk_writer, batch_num, rows_per_batch)?,
+            _ => create_test_rows(batch_num, rows_per_batch, bulk_writer.table_schema())?,
+        };
         match bulk_writer.write_rows_async(rows).await {
             Ok(request_id) => {
                 request_ids.push(request_id);
@@ -233,7 +321,13 @@ async fn run_parallel_writes() -> Result<Duration> {
 async fn main() -> Result<()> {
     println!("=== High-Throughput Bulk Stream Writer Example ===");
     println!("Use case: ETL, data migration, batch processing, log ingestion");
-    println!("When to use: High-volume data, can tolerate higher latency for better throughput\n");
+    println!("When to use: High-volume data, can tolerate higher latency for better throughput");
+    println!();
+    println!("🚀 New API Features Demonstrated:");
+    println!("  • writer.alloc_rows_buffer(): Optimized buffer allocation with schema caching");
+    println!("  • writer.new_row(): Schema-safe row builder with field name validation");
+    println!("  • Arc<Schema> sharing: Zero-cost schema validation for same-writer buffers");
+    println!();
 
     // Baseline: traditional sequential approach
     println!("[1/2] Sequential Baseline (traditional approach)");
@@ -286,9 +380,11 @@ async fn main() -> Result<()> {
     }
 
     println!();
-    println!("=== BulkStreamWriter Parallel API ===");
-    println!("🔄 write_rows():           Submit batch and wait for completion (traditional)");
-    println!("⚡ write_rows_async():     Submit batch without waiting, returns request_id");
+    println!("=== BulkStreamWriter API Summary ===");
+    println!("🔄 write_rows():                Submit batch and wait for completion (traditional)");
+    println!("⚡ write_rows_async():          Submit batch without waiting, returns request_id");
+    println!("🚀 alloc_rows_buffer():         Allocate optimized buffer with shared schema");
+    println!("🛡️  new_row():                 Create schema-safe row builder with field names");
     println!("🔍 wait_for_response(id):  Wait for specific request by ID");
     println!("⏳ wait_for_all_pending(): Wait for all submitted requests");
     println!("🏁 finish():               Close connection, discard remaining responses");

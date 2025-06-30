@@ -19,6 +19,8 @@ use arrow::record_batch::RecordBatch;
 use arrow_flight::{FlightData, SchemaAsIpc};
 use arrow_ipc::writer;
 
+use crate::bulk::CompressionType;
+
 #[derive(Debug, Clone)]
 pub enum FlightMessage {
     Schema(SchemaRef),
@@ -46,10 +48,16 @@ impl Default for FlightEncoder {
 }
 
 impl FlightEncoder {
-    /// Creates new [FlightEncoder] with compression disabled.
-    pub fn without_compression() -> Self {
+    /// Creates new [FlightEncoder] with specified compression type.
+    pub fn with_compression(compression: CompressionType) -> Self {
+        let arrow_compression = match compression {
+            CompressionType::None => None,
+            CompressionType::Lz4 => Some(arrow::ipc::CompressionType::LZ4_FRAME),
+            CompressionType::Zstd => Some(arrow::ipc::CompressionType::ZSTD),
+        };
+
         let write_options = writer::IpcWriteOptions::default()
-            .try_with_compression(None)
+            .try_with_compression(arrow_compression)
             .unwrap();
 
         Self {
@@ -57,6 +65,12 @@ impl FlightEncoder {
             data_gen: writer::IpcDataGenerator::default(),
             dictionary_tracker: writer::DictionaryTracker::new(false),
         }
+    }
+
+    /// Creates new [FlightEncoder] with compression disabled.
+    /// This is a convenience method for `with_compression(CompressionType::None)`.
+    pub fn without_compression() -> Self {
+        Self::with_compression(CompressionType::None)
     }
 
     pub fn encode(&mut self, flight_message: FlightMessage) -> FlightData {

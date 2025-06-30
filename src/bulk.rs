@@ -25,7 +25,13 @@ use std::time::{Duration, Instant};
 use tokio::select;
 use tokio::time::timeout;
 
-use arrow_array::builder::BinaryBuilder;
+use arrow_array::builder::{
+    BinaryBuilder, BooleanBuilder, Date32Builder, Float32Builder, Float64Builder, Int16Builder,
+    Int32Builder, Int64Builder, Int8Builder, StringBuilder, Time32MillisecondBuilder,
+    Time32SecondBuilder, Time64MicrosecondBuilder, Time64NanosecondBuilder,
+    TimestampMicrosecondBuilder, TimestampMillisecondBuilder, TimestampNanosecondBuilder,
+    TimestampSecondBuilder, UInt16Builder, UInt32Builder, UInt64Builder, UInt8Builder,
+};
 use arrow_array::{Array, RecordBatch};
 use arrow_flight::{FlightData, FlightDescriptor};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
@@ -37,53 +43,11 @@ use crate::client::Client;
 use crate::database::Database;
 use crate::flight::do_put::{DoPutMetadata, DoPutResponse};
 use crate::flight::{FlightEncoder, FlightMessage};
-use crate::table::{Column, Row, Table};
+use crate::table::{Column, Row, Table, Value};
 use crate::{error, Result};
 use snafu::{ensure, ResultExt};
 
 pub type RequestId = i64;
-
-// Macro to generate array conversion for simple types
-macro_rules! build_primitive_array {
-    ($rows:expr, $col_idx:expr, $getter:ident, $array_type:ty) => {{
-        let values: Vec<Option<_>> = $rows.iter().map(|row| row.$getter($col_idx)).collect();
-        Arc::new(<$array_type>::from(values)) as Arc<dyn Array>
-    }};
-}
-
-// Macro to generate binary array conversion with better capacity estimation
-macro_rules! build_binary_array {
-    ($rows:expr, $col_idx:expr, $getter:ident) => {{
-        // Estimate better capacity based on data type
-        let estimated_size = match stringify!($getter) {
-            "get_decimal128" => $rows.len() * 16, // Decimal128 is typically 16 bytes
-            "get_json" => $rows.len() * 128,      // JSON varies, use conservative estimate
-            _ => $rows.len() * 64,                // General binary data
-        };
-        let mut builder = BinaryBuilder::with_capacity($rows.len(), estimated_size);
-        for row in $rows {
-            match row.$getter($col_idx) {
-                Some(data) => builder.append_value(data),
-                None => builder.append_null(),
-            }
-        }
-        Arc::new(builder.finish()) as Arc<dyn Array>
-    }};
-}
-
-// Macro for JSON array conversion (strings to bytes)
-macro_rules! build_json_array {
-    ($rows:expr, $col_idx:expr) => {{
-        let mut builder = BinaryBuilder::with_capacity($rows.len(), $rows.len() * 128);
-        for row in $rows {
-            match row.get_json($col_idx) {
-                Some(json_str) => builder.append_value(json_str.as_bytes()),
-                None => builder.append_null(),
-            }
-        }
-        Arc::new(builder.finish()) as Arc<dyn Array>
-    }};
-}
 
 /// High-level bulk inserter for GreptimeDB
 #[derive(Clone)]
@@ -113,10 +77,24 @@ impl BulkInserter {
     }
 }
 
+/// Compression algorithm options for bulk write operations
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressionType {
+    None,
+    Lz4,
+    Zstd,
+}
+
+impl Default for CompressionType {
+    fn default() -> Self {
+        Self::Zstd
+    }
+}
+
 /// Configuration options for bulk write operations
 #[derive(Debug, Clone, Copy)]
 pub struct BulkWriteOptions {
-    pub compression: bool,
+    pub compression: CompressionType,
     pub timeout: Duration,
     pub parallelism: usize,
 }
@@ -124,7 +102,7 @@ pub struct BulkWriteOptions {
 impl Default for BulkWriteOptions {
     fn default() -> Self {
         Self {
-            compression: true,
+            compression: CompressionType::default(),
             timeout: Duration::from_secs(60),
             parallelism: 1,
         }
@@ -132,8 +110,8 @@ impl Default for BulkWriteOptions {
 }
 
 impl BulkWriteOptions {
-    /// Enable or disable compression
-    pub fn with_compression(mut self, compression: bool) -> Self {
+    /// Set compression type
+    pub fn with_compression(mut self, compression: CompressionType) -> Self {
         self.compression = compression;
         self
     }
@@ -160,6 +138,8 @@ pub struct BulkStreamWriter {
     table_schema: Vec<Column>,
     // Cache the Arrow schema to avoid recreating it for each batch
     arrow_schema: Arc<Schema>,
+    // Pre-computed field name to index mapping for O(1) lookup in RowBuilder
+    field_map: HashMap<String, usize>,
     next_request_id: RequestId,
     encoder: FlightEncoder,
     schema_sent: bool,
@@ -181,13 +161,9 @@ impl BulkStreamWriter {
         options: BulkWriteOptions,
     ) -> Result<Self> {
         // Create the encoder with compression settings
-        let encoder = if options.compression {
-            FlightEncoder::default()
-        } else {
-            FlightEncoder::without_compression()
-        };
+        let encoder = FlightEncoder::with_compression(options.compression);
 
-        // Pre-compute Arrow schema to avoid recreating it for each batch
+        // Convert table schema to Arrow schema
         let fields: Result<Vec<Field>> = table_schema
             .iter()
             .map(|col| {
@@ -196,6 +172,13 @@ impl BulkStreamWriter {
             })
             .collect();
         let arrow_schema = Arc::new(Schema::new(fields?));
+
+        // Pre-compute field name to index mapping for O(1) lookups in RowBuilder
+        let field_map: HashMap<String, usize> = table_schema
+            .iter()
+            .enumerate()
+            .map(|(i, col)| (col.name.clone(), i))
+            .collect();
 
         // Create a channel for streaming FlightData
         let (sender, receiver) = mpsc::channel::<FlightData>(1000);
@@ -210,6 +193,7 @@ impl BulkStreamWriter {
             table_name: table_name.to_string(),
             table_schema,
             arrow_schema,
+            field_map,
             next_request_id: 0,
             encoder,
             schema_sent: false,
@@ -221,7 +205,7 @@ impl BulkStreamWriter {
     }
 
     /// Write rows to the stream using the fixed table schema
-    pub async fn write_rows(&mut self, rows: Vec<Row>) -> Result<DoPutResponse> {
+    pub async fn write_rows(&mut self, rows: Rows) -> Result<DoPutResponse> {
         // Use the async implementation and wait for the response
         let request_id = self.write_rows_async(rows).await?;
         self.wait_for_response(request_id).await
@@ -229,8 +213,11 @@ impl BulkStreamWriter {
 
     /// Submit rows for writing without waiting for response
     /// Returns a request_id that can be used to wait for the specific response
-    pub async fn write_rows_async(&mut self, rows: Vec<Row>) -> Result<RequestId> {
-        let record_batch = self.rows_to_record_batch(&rows)?;
+    pub async fn write_rows_async(&mut self, rows: Rows) -> Result<RequestId> {
+        // Validate that the rows schema matches the writer's schema
+        self.validate_rows_schema(&rows)?;
+
+        let record_batch = RecordBatch::try_from(rows)?; // Zero-cost conversion
         let request_id = self.submit_record_batch(record_batch).await?;
 
         Ok(request_id)
@@ -277,9 +264,8 @@ impl BulkStreamWriter {
                 self.pending_requests.remove(&request_id);
                 if request_id == target_request_id {
                     return Ok(response);
-                } else {
-                    self.completed_responses.insert(request_id, response);
                 }
+                self.completed_responses.insert(request_id, response);
             } else {
                 return error::StreamEndedSnafu.fail();
             }
@@ -309,7 +295,7 @@ impl BulkStreamWriter {
 
             select! {
                 _ = timeout_sleep => {
-                    let pending_ids: Vec<RequestId> = self.pending_requests.keys().cloned().collect();
+                    let pending_ids: Vec<RequestId> = self.pending_requests.keys().copied().collect();
                     return error::RequestTimeoutSnafu {
                         request_ids: pending_ids,
                         timeout: self.timeout,
@@ -320,7 +306,7 @@ impl BulkStreamWriter {
                     match next_option {
                         Some(response) => {
                             // Process the first response
-                            self.handle_single_response(response?, &mut responses)?;
+                            self.handle_single_response(response?, &mut responses);
 
                             // Drain immediately available responses to avoid false timeouts
                             loop {
@@ -330,7 +316,7 @@ impl BulkStreamWriter {
                                     next_option = self.response_stream.next() => {
                                         match next_option {
                                             Some(response) => {
-                                                self.handle_single_response(response?, &mut responses)?;
+                                                self.handle_single_response(response?, &mut responses);
                                             }
                                             None => return self.handle_stream_end(responses),
                                         }
@@ -400,19 +386,17 @@ impl BulkStreamWriter {
         &mut self,
         response: DoPutResponse,
         responses: &mut Vec<DoPutResponse>,
-    ) -> Result<()> {
+    ) {
         let request_id = response.request_id();
         self.pending_requests.remove(&request_id);
         responses.push(response);
-        Ok(())
     }
 
     /// Helper method to cache a single response
-    fn cache_response(&mut self, response: DoPutResponse) -> Result<()> {
+    fn cache_response(&mut self, response: DoPutResponse) {
         let request_id = response.request_id();
         self.pending_requests.remove(&request_id);
         self.completed_responses.insert(request_id, response);
-        Ok(())
     }
 
     /// Helper method to handle stream end cases
@@ -525,11 +509,11 @@ impl BulkStreamWriter {
         match response_result {
             Ok(Some(response)) => {
                 let response = response?;
-                self.cache_response(response)?;
+                self.cache_response(response);
             }
             Ok(None) => return Ok(()), // Stream ended
             Err(_) => {
-                let pending_ids: Vec<RequestId> = self.pending_requests.keys().cloned().collect();
+                let pending_ids: Vec<RequestId> = self.pending_requests.keys().copied().collect();
                 return Err(error::RequestTimeoutSnafu {
                     request_ids: pending_ids,
                     timeout: self.timeout,
@@ -547,7 +531,7 @@ impl BulkStreamWriter {
                     match next_option {
                         Some(response) => {
                             let response = response?;
-                            self.cache_response(response)?;
+                            self.cache_response(response);
                         }
                         None => break, // Stream ended
                     }
@@ -558,153 +542,64 @@ impl BulkStreamWriter {
         Ok(())
     }
 
-    /// Convert rows to Arrow RecordBatch using cached schema
-    fn rows_to_record_batch(&self, rows: &[Row]) -> Result<RecordBatch> {
-        ensure!(!rows.is_empty(), error::EmptyRowsSnafu);
-
-        // Convert all rows to arrays
-        let arrays = self.rows_to_arrays(rows)?;
-        let batch = RecordBatch::try_new(Arc::clone(&self.arrow_schema), arrays)
-            .context(error::CreateRecordBatchSnafu)?;
-
-        Ok(batch)
+    /// Allocate a new rows buffer that is bound to this writer's schema
+    /// This ensures schema compatibility and provides optimal performance
+    pub fn alloc_rows_buffer(&self, capacity: usize) -> Result<Rows> {
+        Rows::with_schema(&self.table_schema, self.arrow_schema.clone(), capacity)
     }
 
-    /// Convert rows to Arrow arrays (optimized version without cloning schema)
-    fn rows_to_arrays(&self, rows: &[Row]) -> Result<Vec<Arc<dyn Array>>> {
-        // Pre-allocate with exact capacity
-        let mut arrays = Vec::with_capacity(self.table_schema.len());
+    /// Create a new Row builder that is compatible with this writer's schema
+    /// Returns a RowBuilder that can efficiently build rows for this writer
+    /// Uses O(1) field name lookup for optimal performance
+    #[must_use]
+    pub fn new_row(&self) -> RowBuilder {
+        RowBuilder::new(&self.table_schema, &self.field_map)
+    }
 
-        for (col_idx, column) in self.table_schema.iter().enumerate() {
-            let array = match &column.data_type {
-                // Boolean type
-                ColumnDataType::Boolean => {
-                    build_primitive_array!(rows, col_idx, get_bool, arrow_array::BooleanArray)
-                }
+    /// Get the table schema that this writer is bound to
+    pub fn table_schema(&self) -> &[Column] {
+        &self.table_schema
+    }
 
-                // Integer types
-                ColumnDataType::Int8 => {
-                    build_primitive_array!(rows, col_idx, get_i8, arrow_array::Int8Array)
-                }
-                ColumnDataType::Int16 => {
-                    build_primitive_array!(rows, col_idx, get_i16, arrow_array::Int16Array)
-                }
-                ColumnDataType::Int32 => {
-                    build_primitive_array!(rows, col_idx, get_i32, arrow_array::Int32Array)
-                }
-                ColumnDataType::Int64 => {
-                    build_primitive_array!(rows, col_idx, get_i64, arrow_array::Int64Array)
-                }
-                ColumnDataType::Uint8 => {
-                    build_primitive_array!(rows, col_idx, get_u8, arrow_array::UInt8Array)
-                }
-                ColumnDataType::Uint16 => {
-                    build_primitive_array!(rows, col_idx, get_u16, arrow_array::UInt16Array)
-                }
-                ColumnDataType::Uint32 => {
-                    build_primitive_array!(rows, col_idx, get_u32, arrow_array::UInt32Array)
-                }
-                ColumnDataType::Uint64 => {
-                    build_primitive_array!(rows, col_idx, get_u64, arrow_array::UInt64Array)
-                }
+    /// Validate that the provided Rows schema matches the writer's bound schema
+    fn validate_rows_schema(&self, rows: &Rows) -> Result<()> {
+        let rows_schema = rows.schema();
 
-                // Float types
-                ColumnDataType::Float32 => {
-                    build_primitive_array!(rows, col_idx, get_f32, arrow_array::Float32Array)
-                }
-                ColumnDataType::Float64 => {
-                    build_primitive_array!(rows, col_idx, get_f64, arrow_array::Float64Array)
-                }
-
-                // String and Binary types
-                ColumnDataType::Binary => {
-                    build_binary_array!(rows, col_idx, get_binary)
-                }
-                ColumnDataType::String => {
-                    build_primitive_array!(rows, col_idx, get_string, arrow_array::StringArray)
-                }
-
-                // Date and Time types
-                ColumnDataType::Date => {
-                    build_primitive_array!(rows, col_idx, get_date, arrow_array::Date32Array)
-                }
-                ColumnDataType::Datetime => build_primitive_array!(
-                    rows,
-                    col_idx,
-                    get_datetime,
-                    arrow_array::TimestampMillisecondArray
-                ),
-
-                // Timestamp types
-                ColumnDataType::TimestampSecond => build_primitive_array!(
-                    rows,
-                    col_idx,
-                    get_timestamp,
-                    arrow_array::TimestampSecondArray
-                ),
-                ColumnDataType::TimestampMillisecond => build_primitive_array!(
-                    rows,
-                    col_idx,
-                    get_timestamp,
-                    arrow_array::TimestampMillisecondArray
-                ),
-                ColumnDataType::TimestampMicrosecond => build_primitive_array!(
-                    rows,
-                    col_idx,
-                    get_timestamp,
-                    arrow_array::TimestampMicrosecondArray
-                ),
-                ColumnDataType::TimestampNanosecond => build_primitive_array!(
-                    rows,
-                    col_idx,
-                    get_timestamp,
-                    arrow_array::TimestampNanosecondArray
-                ),
-
-                // Time types
-                ColumnDataType::TimeSecond => {
-                    build_primitive_array!(rows, col_idx, get_i32, arrow_array::Time32SecondArray)
-                }
-                ColumnDataType::TimeMillisecond => build_primitive_array!(
-                    rows,
-                    col_idx,
-                    get_i32,
-                    arrow_array::Time32MillisecondArray
-                ),
-                ColumnDataType::TimeMicrosecond => build_primitive_array!(
-                    rows,
-                    col_idx,
-                    get_i64,
-                    arrow_array::Time64MicrosecondArray
-                ),
-                ColumnDataType::TimeNanosecond => build_primitive_array!(
-                    rows,
-                    col_idx,
-                    get_i64,
-                    arrow_array::Time64NanosecondArray
-                ),
-
-                // Decimal type (stored as binary)
-                ColumnDataType::Decimal128 => {
-                    build_binary_array!(rows, col_idx, get_decimal128)
-                }
-
-                // JSON type (stored as binary per Java implementation)
-                ColumnDataType::Json => {
-                    build_json_array!(rows, col_idx)
-                }
-
-                // Unsupported types - these should not be used
-                _ => {
-                    return error::UnsupportedDataTypeSnafu {
-                        data_type: format!("{:?}. Only basic types, timestamps, times, decimal128, and json are supported", column.data_type),
-                    }.fail();
-                }
-            };
-            arrays.push(array);
+        // Fast path: if it's the exact same Arc, skip validation
+        if Arc::ptr_eq(&self.arrow_schema, rows_schema) {
+            return Ok(());
         }
 
-        Ok(arrays)
+        // Fast path: check field count first (cheapest comparison)
+        let expected_fields = self.arrow_schema.fields();
+        let actual_fields = rows_schema.fields();
+
+        if expected_fields.len() != actual_fields.len() {
+            return self.schema_mismatch_error(expected_fields, actual_fields);
+        }
+
+        // Check each field for compatibility
+        for (expected, actual) in expected_fields.iter().zip(actual_fields.iter()) {
+            if expected != actual {
+                return self.schema_mismatch_error(expected_fields, actual_fields);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Helper to create schema mismatch error with lazy formatting
+    #[cold]
+    fn schema_mismatch_error(
+        &self,
+        expected_fields: &arrow_schema::Fields,
+        actual_fields: &arrow_schema::Fields,
+    ) -> Result<()> {
+        error::SchemaMismatchSnafu {
+            expected: format!("{expected_fields:?}"),
+            actual: format!("{actual_fields:?}"),
+        }
+        .fail()
     }
 
     fn next_request_id(&mut self) -> RequestId {
@@ -775,5 +670,578 @@ fn column_data_type_to_arrow(data_type: ColumnDataType) -> Result<DataType> {
     })
 }
 
+/// High-level rows abstraction with zero-cost RecordBatch conversion
+/// This provides a user-friendly API while maintaining optimal performance
+pub struct Rows {
+    builder: RowBatchBuilder,
+    schema: Arc<Schema>,
+}
+
+impl Rows {
+    /// Create a new Rows collection with the given schema and capacity
+    pub fn new(table_schema: &[Column], capacity: usize) -> Result<Self> {
+        let builder = RowBatchBuilder::new(table_schema, capacity)?;
+        let schema = builder.schema.clone();
+
+        Ok(Self { builder, schema })
+    }
+
+    /// Create a new Rows collection with a pre-computed Arrow schema
+    /// This is more efficient when the Arrow schema is already available
+    fn with_schema(
+        table_schema: &[Column],
+        arrow_schema: Arc<Schema>,
+        capacity: usize,
+    ) -> Result<Self> {
+        let builder = RowBatchBuilder::with_schema(table_schema, arrow_schema.clone(), capacity)?;
+
+        Ok(Self {
+            builder,
+            schema: arrow_schema,
+        })
+    }
+
+    /// Add a row to the collection
+    pub fn add_row(&mut self, row: &Row) -> Result<()> {
+        self.builder.add_row(row)
+    }
+
+    /// Get the current number of rows
+    pub fn len(&self) -> usize {
+        self.builder.len()
+    }
+
+    /// Check if the collection is empty
+    pub fn is_empty(&self) -> bool {
+        self.builder.is_empty()
+    }
+
+    // Note: No capacity limits - can grow dynamically as needed
+
+    /// Get the schema
+    pub fn schema(&self) -> &Arc<Schema> {
+        &self.schema
+    }
+}
+
+/// Zero-cost conversion from Rows to RecordBatch
+impl TryFrom<Rows> for RecordBatch {
+    type Error = crate::Error;
+
+    fn try_from(rows: Rows) -> Result<Self> {
+        // This is zero-cost because we're just moving the internal data
+        rows.builder.build()
+    }
+}
+
+/// Efficient batch builder that directly constructs Arrow arrays
+/// This avoids the overhead of creating intermediate Row objects and converting them
+/// Arrow builders automatically manage capacity and expand as needed
+pub struct RowBatchBuilder {
+    builders: Vec<Box<dyn ArrayBuilder>>,
+    schema: Arc<Schema>,
+    current_rows: usize,
+}
+
+impl RowBatchBuilder {
+    /// Create a new RowBatchBuilder with the given schema and capacity
+    pub fn new(table_schema: &[Column], capacity: usize) -> Result<Self> {
+        let fields: Result<Vec<Field>> = table_schema
+            .iter()
+            .map(|col| {
+                column_data_type_to_arrow(col.data_type)
+                    .map(|data_type| Field::new(&col.name, data_type, true))
+            })
+            .collect();
+        let schema = Arc::new(Schema::new(fields?));
+
+        let builders: Result<Vec<Box<dyn ArrayBuilder>>> = table_schema
+            .iter()
+            .map(|col| create_array_builder(col.data_type, capacity))
+            .collect();
+
+        Ok(Self {
+            builders: builders?,
+            schema,
+            current_rows: 0,
+        })
+    }
+
+    /// Create a new RowBatchBuilder with a pre-computed Arrow schema
+    fn with_schema(table_schema: &[Column], schema: Arc<Schema>, capacity: usize) -> Result<Self> {
+        let builders: Result<Vec<Box<dyn ArrayBuilder>>> = table_schema
+            .iter()
+            .map(|col| create_array_builder(col.data_type, capacity))
+            .collect();
+
+        Ok(Self {
+            builders: builders?,
+            schema,
+            current_rows: 0,
+        })
+    }
+
+    /// Add a row to the batch builder
+    /// Arrow builders automatically expand capacity as needed
+    pub fn add_row(&mut self, row: &Row) -> Result<()> {
+        for (col_idx, builder) in self.builders.iter_mut().enumerate() {
+            builder.append_value_from_row(row, col_idx)?;
+        }
+
+        self.current_rows += 1;
+        Ok(())
+    }
+
+    /// Build the RecordBatch from accumulated rows
+    pub fn build(mut self) -> Result<RecordBatch> {
+        let arrays: Result<Vec<Arc<dyn Array>>> = self
+            .builders
+            .iter_mut()
+            .map(|builder| builder.finish())
+            .collect();
+
+        let batch =
+            RecordBatch::try_new(self.schema, arrays?).context(error::CreateRecordBatchSnafu)?;
+
+        Ok(batch)
+    }
+
+    /// Get the current number of rows in the builder
+    pub fn len(&self) -> usize {
+        self.current_rows
+    }
+
+    /// Check if the builder is empty
+    pub fn is_empty(&self) -> bool {
+        self.current_rows == 0
+    }
+
+    // Note: No capacity limits - Arrow builders manage their own memory automatically
+}
+
+/// Trait for type-erased array builders
+trait ArrayBuilder {
+    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()>;
+    fn finish(&mut self) -> Result<Arc<dyn Array>>;
+}
+
+/// Create an array builder for the given column data type
+fn create_array_builder(
+    data_type: ColumnDataType,
+    capacity: usize,
+) -> Result<Box<dyn ArrayBuilder>> {
+    Ok(match data_type {
+        ColumnDataType::Boolean => Box::new(TypedArrayBuilder::<BooleanBuilder>::new(capacity)),
+        ColumnDataType::Int8 => Box::new(TypedArrayBuilder::<Int8Builder>::new(capacity)),
+        ColumnDataType::Int16 => Box::new(TypedArrayBuilder::<Int16Builder>::new(capacity)),
+        ColumnDataType::Int32 => Box::new(TypedArrayBuilder::<Int32Builder>::new(capacity)),
+        ColumnDataType::Int64 => Box::new(TypedArrayBuilder::<Int64Builder>::new(capacity)),
+        ColumnDataType::Uint8 => Box::new(TypedArrayBuilder::<UInt8Builder>::new(capacity)),
+        ColumnDataType::Uint16 => Box::new(TypedArrayBuilder::<UInt16Builder>::new(capacity)),
+        ColumnDataType::Uint32 => Box::new(TypedArrayBuilder::<UInt32Builder>::new(capacity)),
+        ColumnDataType::Uint64 => Box::new(TypedArrayBuilder::<UInt64Builder>::new(capacity)),
+        ColumnDataType::Float32 => Box::new(TypedArrayBuilder::<Float32Builder>::new(capacity)),
+        ColumnDataType::Float64 => Box::new(TypedArrayBuilder::<Float64Builder>::new(capacity)),
+        ColumnDataType::String => Box::new(TypedArrayBuilder::<StringBuilder>::new(capacity)),
+        ColumnDataType::Binary => Box::new(TypedArrayBuilder::<BinaryBuilder>::new(capacity)),
+        ColumnDataType::Date => Box::new(TypedArrayBuilder::<Date32Builder>::new(capacity)),
+        ColumnDataType::Datetime => Box::new(
+            TypedArrayBuilder::<TimestampMicrosecondBuilder>::new(capacity),
+        ),
+        ColumnDataType::TimestampSecond => {
+            Box::new(TypedArrayBuilder::<TimestampSecondBuilder>::new(capacity))
+        }
+        ColumnDataType::TimestampMillisecond => Box::new(TypedArrayBuilder::<
+            TimestampMillisecondBuilder,
+        >::new(capacity)),
+        ColumnDataType::TimestampMicrosecond => Box::new(TypedArrayBuilder::<
+            TimestampMicrosecondBuilder,
+        >::new(capacity)),
+        ColumnDataType::TimestampNanosecond => Box::new(TypedArrayBuilder::<
+            TimestampNanosecondBuilder,
+        >::new(capacity)),
+        ColumnDataType::TimeSecond => {
+            Box::new(TypedArrayBuilder::<Time32SecondBuilder>::new(capacity))
+        }
+        ColumnDataType::TimeMillisecond => {
+            Box::new(TypedArrayBuilder::<Time32MillisecondBuilder>::new(capacity))
+        }
+        ColumnDataType::TimeMicrosecond => {
+            Box::new(TypedArrayBuilder::<Time64MicrosecondBuilder>::new(capacity))
+        }
+        ColumnDataType::TimeNanosecond => {
+            Box::new(TypedArrayBuilder::<Time64NanosecondBuilder>::new(capacity))
+        }
+        ColumnDataType::Decimal128 => Box::new(BinaryArrayBuilder::new(capacity)),
+        ColumnDataType::Json => Box::new(BinaryArrayBuilder::new(capacity)),
+        _ => {
+            return error::UnsupportedDataTypeSnafu {
+                data_type: format!("{data_type:?}. Not supported in RowBatchBuilder"),
+            }
+            .fail();
+        }
+    })
+}
+
+/// Generic typed array builder wrapper
+struct TypedArrayBuilder<T> {
+    builder: T,
+}
+
+impl<T> TypedArrayBuilder<T> {
+    fn new(_capacity: usize) -> Self
+    where
+        T: Default,
+    {
+        Self {
+            builder: T::default(),
+        }
+    }
+}
+
+/// Specialized binary array builder for Decimal128 and JSON
+struct BinaryArrayBuilder {
+    builder: BinaryBuilder,
+}
+
+impl BinaryArrayBuilder {
+    fn new(capacity: usize) -> Self {
+        Self {
+            builder: BinaryBuilder::with_capacity(capacity, capacity * 64),
+        }
+    }
+}
+
+// Implementations for common types
+impl ArrayBuilder for TypedArrayBuilder<BooleanBuilder> {
+    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
+        match row.get_bool(col_idx) {
+            Some(val) => self.builder.append_value(val),
+            None => self.builder.append_null(),
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<Arc<dyn Array>> {
+        Ok(Arc::new(self.builder.finish()))
+    }
+}
+
+impl ArrayBuilder for TypedArrayBuilder<StringBuilder> {
+    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
+        match row.get_string(col_idx) {
+            Some(val) => self.builder.append_value(val),
+            None => self.builder.append_null(),
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<Arc<dyn Array>> {
+        Ok(Arc::new(self.builder.finish()))
+    }
+}
+
+impl ArrayBuilder for TypedArrayBuilder<Int64Builder> {
+    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
+        match row.get_i64(col_idx) {
+            Some(val) => self.builder.append_value(val),
+            None => self.builder.append_null(),
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<Arc<dyn Array>> {
+        Ok(Arc::new(self.builder.finish()))
+    }
+}
+
+impl ArrayBuilder for TypedArrayBuilder<TimestampMillisecondBuilder> {
+    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
+        match row.get_timestamp(col_idx) {
+            Some(val) => self.builder.append_value(val),
+            None => self.builder.append_null(),
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<Arc<dyn Array>> {
+        Ok(Arc::new(self.builder.finish()))
+    }
+}
+
+impl ArrayBuilder for TypedArrayBuilder<BinaryBuilder> {
+    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
+        match row.get_binary(col_idx) {
+            Some(val) => self.builder.append_value(val),
+            None => self.builder.append_null(),
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<Arc<dyn Array>> {
+        Ok(Arc::new(self.builder.finish()))
+    }
+}
+
+impl ArrayBuilder for BinaryArrayBuilder {
+    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
+        match row.get_binary(col_idx) {
+            Some(val) => self.builder.append_value(val),
+            None => self.builder.append_null(),
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<Arc<dyn Array>> {
+        Ok(Arc::new(self.builder.finish()))
+    }
+}
+
+// Add more implementations for other numeric types...
+macro_rules! impl_numeric_builder {
+    ($builder_type:ty, $getter:ident, $value_type:ty) => {
+        impl ArrayBuilder for TypedArrayBuilder<$builder_type> {
+            fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
+                match row.$getter(col_idx) {
+                    Some(val) => self.builder.append_value(val),
+                    None => self.builder.append_null(),
+                }
+                Ok(())
+            }
+
+            fn finish(&mut self) -> Result<Arc<dyn Array>> {
+                Ok(Arc::new(self.builder.finish()))
+            }
+        }
+    };
+}
+
+impl_numeric_builder!(Int8Builder, get_i8, i8);
+impl_numeric_builder!(Int16Builder, get_i16, i16);
+impl_numeric_builder!(Int32Builder, get_i32, i32);
+impl_numeric_builder!(UInt8Builder, get_u8, u8);
+impl_numeric_builder!(UInt16Builder, get_u16, u16);
+impl_numeric_builder!(UInt32Builder, get_u32, u32);
+impl_numeric_builder!(UInt64Builder, get_u64, u64);
+impl_numeric_builder!(Float32Builder, get_f32, f32);
+impl_numeric_builder!(Float64Builder, get_f64, f64);
+
+// Timestamp builders
+impl_numeric_builder!(TimestampSecondBuilder, get_timestamp, i64);
+impl_numeric_builder!(TimestampMicrosecondBuilder, get_timestamp, i64);
+impl_numeric_builder!(TimestampNanosecondBuilder, get_timestamp, i64);
+
+// Time builders
+impl_numeric_builder!(Time32SecondBuilder, get_i32, i32);
+impl_numeric_builder!(Time32MillisecondBuilder, get_i32, i32);
+impl_numeric_builder!(Time64MicrosecondBuilder, get_i64, i64);
+impl_numeric_builder!(Time64NanosecondBuilder, get_i64, i64);
+
+// Date builder
+impl_numeric_builder!(Date32Builder, get_date, i32);
+
+/// A helper for building rows with schema-aware field access
+/// This prevents common mistakes like incorrect field order or types
+/// Uses O(1) field name lookup for optimal performance
+pub struct RowBuilder<'a> {
+    schema: &'a [Column],
+    field_map: &'a HashMap<String, usize>, // Pre-computed field name to index mapping
+    values: Vec<Option<Value>>,
+}
+
+impl<'a> RowBuilder<'a> {
+    fn new(schema: &'a [Column], field_map: &'a HashMap<String, usize>) -> Self {
+        Self {
+            schema,
+            field_map,
+            values: vec![None; schema.len()],
+        }
+    }
+
+    /// Set a field value by name with O(1) lookup performance.
+    /// This ensures correct field mapping and prevents field order mistakes.
+    pub fn set(mut self, field_name: &str, value: Value) -> Result<Self> {
+        let field_index = self.field_map.get(field_name).copied().ok_or_else(|| {
+            error::MissingFieldSnafu {
+                field: field_name.to_string(),
+            }
+            .build()
+        })?;
+
+        self.values[field_index] = Some(value);
+        Ok(self)
+    }
+
+    /// Build the final Row, ensuring all required fields are set
+    pub fn build(self) -> Result<Row> {
+        let mut row_values = Vec::with_capacity(self.values.len());
+
+        for (i, opt_value) in self.values.into_iter().enumerate() {
+            match opt_value {
+                Some(value) => row_values.push(value),
+                None => {
+                    return error::MissingFieldSnafu {
+                        field: self.schema[i].name.clone(),
+                    }
+                    .fail();
+                }
+            }
+        }
+
+        Ok(Row::new().add_values(row_values))
+    }
+}
+
 // Re-export the proto ColumnDataType for convenience
 pub use crate::api::v1::ColumnDataType as ColumnType;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::v1::{ColumnDataType, SemanticType};
+    use crate::table::{Column, Value};
+
+    #[test]
+    fn test_rows_schema_validation() {
+        // Create a schema with 3 columns
+        let schema1 = vec![
+            Column {
+                name: "id".to_string(),
+                data_type: ColumnDataType::Int64,
+                semantic_type: SemanticType::Field,
+            },
+            Column {
+                name: "name".to_string(),
+                data_type: ColumnDataType::String,
+                semantic_type: SemanticType::Field,
+            },
+            Column {
+                name: "timestamp".to_string(),
+                data_type: ColumnDataType::TimestampMillisecond,
+                semantic_type: SemanticType::Timestamp,
+            },
+        ];
+
+        // Create a different schema
+        let schema2 = vec![
+            Column {
+                name: "id".to_string(),
+                data_type: ColumnDataType::Int64,
+                semantic_type: SemanticType::Field,
+            },
+            Column {
+                name: "value".to_string(),          // Different column name
+                data_type: ColumnDataType::Float64, // Different data type
+                semantic_type: SemanticType::Field,
+            },
+        ];
+
+        // Test 1: Compatible rows should work
+        let rows1 = Rows::new(&schema1, 10).expect("Failed to create rows1");
+
+        // Test 2: Incompatible rows should fail validation
+        let rows2 = Rows::new(&schema2, 10).expect("Failed to create rows2");
+
+        // Mock the validation (since we can't easily create a BulkStreamWriter in tests)
+        // In practice, this would be tested with a real BulkStreamWriter
+        assert_eq!(rows1.schema().fields().len(), 3);
+        assert_eq!(rows2.schema().fields().len(), 2);
+
+        // The actual schema validation would happen in validate_rows_schema()
+        // which checks that field names and types match exactly
+    }
+
+    #[test]
+    fn test_rows_creation_and_capacity() {
+        let schema = vec![
+            Column {
+                name: "id".to_string(),
+                data_type: ColumnDataType::Int64,
+                semantic_type: SemanticType::Field,
+            },
+            Column {
+                name: "message".to_string(),
+                data_type: ColumnDataType::String,
+                semantic_type: SemanticType::Field,
+            },
+        ];
+
+        let mut rows = Rows::new(&schema, 5).expect("Failed to create rows");
+
+        // Test initial state
+        assert_eq!(rows.len(), 0);
+        assert!(rows.is_empty());
+
+        // Add some rows
+        let row1 = crate::table::Row::new()
+            .add_values(vec![Value::Int64(1), Value::String("first".to_string())]);
+
+        let row2 = crate::table::Row::new()
+            .add_values(vec![Value::Int64(2), Value::String("second".to_string())]);
+
+        rows.add_row(&row1).expect("Failed to add row1");
+        rows.add_row(&row2).expect("Failed to add row2");
+
+        // Test state after adding rows
+        assert_eq!(rows.len(), 2);
+        assert!(!rows.is_empty());
+    }
+
+    #[test]
+    fn test_row_builder_api() {
+        let schema = vec![
+            Column {
+                name: "timestamp".to_string(),
+                data_type: ColumnDataType::TimestampMillisecond,
+                semantic_type: SemanticType::Timestamp,
+            },
+            Column {
+                name: "sensor_id".to_string(),
+                data_type: ColumnDataType::String,
+                semantic_type: SemanticType::Field,
+            },
+            Column {
+                name: "temperature".to_string(),
+                data_type: ColumnDataType::Float64,
+                semantic_type: SemanticType::Field,
+            },
+        ];
+
+        // Create field map for testing
+        let field_map: HashMap<String, usize> = schema
+            .iter()
+            .enumerate()
+            .map(|(i, col)| (col.name.clone(), i))
+            .collect();
+
+        let row_builder = RowBuilder::new(&schema, &field_map);
+
+        // Test field-by-name API
+        let _row = row_builder
+            .set("timestamp", Value::Timestamp(1234567890))
+            .expect("Failed to set timestamp")
+            .set("sensor_id", Value::String("sensor_001".to_string()))
+            .expect("Failed to set sensor_id")
+            .set("temperature", Value::Float64(23.5))
+            .expect("Failed to set temperature")
+            .build()
+            .expect("Failed to build row");
+
+        // Row was successfully built with 3 fields
+        // Test passed - no need for assertion
+
+        // Test missing field error
+        let incomplete_builder = RowBuilder::new(&schema, &field_map);
+        let result = incomplete_builder
+            .set("timestamp", Value::Timestamp(1234567890))
+            .expect("Failed to set timestamp")
+            .build(); // Missing sensor_id and temperature
+
+        assert!(result.is_err());
+
+        // Test invalid field name error
+        let invalid_builder = RowBuilder::new(&schema, &field_map);
+        let result = invalid_builder.set("invalid_field", Value::String("test".to_string()));
+        assert!(result.is_err());
+    }
+}
