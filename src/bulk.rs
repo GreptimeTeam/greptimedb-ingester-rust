@@ -166,17 +166,12 @@ impl BulkInserter {
 }
 
 /// Compression algorithm options for bulk write operations
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompressionType {
     None,
     Lz4,
+    #[default]
     Zstd,
-}
-
-impl Default for CompressionType {
-    fn default() -> Self {
-        Self::Zstd
-    }
 }
 
 /// Configuration options for bulk write operations
@@ -403,7 +398,7 @@ impl BulkStreamWriter {
 
                             // Drain immediately available responses to avoid false timeouts
                             loop {
-                                let drain_timeout = tokio::time::sleep(Duration::from_millis(5));
+                                let drain_timeout = tokio::time::sleep(Duration::from_millis(1));
                                 select! {
                                     _ = drain_timeout => break,
                                     next_option = self.response_stream.next() => {
@@ -476,11 +471,12 @@ impl BulkStreamWriter {
 
     /// Allocate a new rows buffer that is bound to this writer's schema
     /// This ensures schema compatibility and provides optimal performance
-    pub fn alloc_rows_buffer(&self, capacity: usize) -> Result<Rows> {
+    pub fn alloc_rows_buffer(&self, capacity: usize, row_buffer_size: usize) -> Result<Rows> {
         Rows::with_arrow_schema(
             &self.table_schema,
             self.arrow_schema.clone(),
             capacity,
+            row_buffer_size,
             self.alloc_stats.clone(),
         )
     }
@@ -641,7 +637,7 @@ impl BulkStreamWriter {
 
         // Then drain any additional responses quickly
         loop {
-            let drain_timeout = tokio::time::sleep(Duration::from_millis(1));
+            let drain_timeout = tokio::time::sleep(Duration::from_micros(1));
             select! {
                 _ = drain_timeout => break,
                 next_option = self.response_stream.next() => {
@@ -768,11 +764,14 @@ fn column_data_type_to_arrow(data_type: ColumnDataType) -> Result<DataType> {
     })
 }
 
-/// High-level rows abstraction with zero-cost RecordBatch conversion
+/// High-level rows abstraction with buffered batch conversion
 /// This provides a user-friendly API while maintaining optimal performance
 pub struct Rows {
     builder: RowBatchBuilder,
     schema: Arc<Schema>,
+    // Row buffering for improved performance
+    row_buffer: Vec<Row>,
+    buffer_size: usize,
 }
 
 impl Rows {
@@ -780,12 +779,18 @@ impl Rows {
     pub fn new(
         table_schema: &[Column],
         capacity: usize,
+        row_buffer_size: usize,
         alloc_stats: Arc<AdaptiveAllocStats>,
     ) -> Result<Self> {
         let builder = RowBatchBuilder::new(table_schema, capacity, alloc_stats)?;
         let schema = builder.schema.clone();
 
-        Ok(Self { builder, schema })
+        Ok(Self {
+            builder,
+            schema,
+            row_buffer: Vec::with_capacity(row_buffer_size),
+            buffer_size: row_buffer_size,
+        })
     }
 
     /// Create a new Rows collection with a pre-computed Arrow schema
@@ -793,6 +798,7 @@ impl Rows {
         table_schema: &[Column],
         arrow_schema: Arc<Schema>,
         capacity: usize,
+        row_buffer_size: usize,
         alloc_stats: Arc<AdaptiveAllocStats>,
     ) -> Result<Self> {
         let builder = RowBatchBuilder::with_arrow_schema(
@@ -805,22 +811,44 @@ impl Rows {
         Ok(Self {
             builder,
             schema: arrow_schema,
+            row_buffer: Vec::with_capacity(row_buffer_size),
+            buffer_size: row_buffer_size,
         })
     }
 
-    /// Add a row to the collection
-    pub fn add_row(&mut self, row: &Row) -> Result<()> {
-        self.builder.add_row(row)
+    /// Add a row to the collection using move semantics
+    pub fn add_row(&mut self, row: Row) -> Result<()> {
+        self.row_buffer.push(row);
+
+        // If buffer is full, flush it to a RecordBatch
+        if self.row_buffer.len() >= self.buffer_size {
+            self.flush_buffer()?;
+        }
+
+        Ok(())
+    }
+
+    /// Flush the current row buffer to the builder
+    fn flush_buffer(&mut self) -> Result<()> {
+        if self.row_buffer.is_empty() {
+            return Ok(());
+        }
+
+        // Process all rows in the buffer at once for better performance
+        let rows: Vec<Row> = self.row_buffer.drain(..).collect();
+        self.builder.add_rows(&rows)?;
+
+        Ok(())
     }
 
     /// Get the current number of rows
     pub fn len(&self) -> usize {
-        self.builder.len()
+        self.builder.len() + self.row_buffer.len()
     }
 
     /// Check if the collection is empty
     pub fn is_empty(&self) -> bool {
-        self.builder.is_empty()
+        self.len() == 0
     }
 
     // Note: No capacity limits - can grow dynamically as needed
@@ -831,12 +859,15 @@ impl Rows {
     }
 }
 
-/// Zero-cost conversion from Rows to RecordBatch
+/// Convert Rows to RecordBatch, handling buffered data
 impl TryFrom<Rows> for RecordBatch {
     type Error = crate::Error;
 
-    fn try_from(rows: Rows) -> Result<Self> {
-        // This is zero-cost because we're just moving the internal data
+    fn try_from(mut rows: Rows) -> Result<Self> {
+        // Flush any remaining buffered rows to the builder
+        rows.flush_buffer()?;
+
+        // Build the single RecordBatch
         rows.builder.build()
     }
 }
@@ -897,19 +928,17 @@ impl RowBatchBuilder {
         })
     }
 
-    /// Add a row to the batch builder
-    /// Arrow builders automatically expand capacity as needed
-    pub fn add_row(&mut self, row: &Row) -> Result<()> {
+    /// Add multiple rows to the batch builder using batch operations
+    fn add_rows(&mut self, rows: &[Row]) -> Result<()> {
         for (col_idx, builder) in self.builders.iter_mut().enumerate() {
-            builder.append_value_from_row(row, col_idx)?;
+            builder.append_values_from_rows(rows, col_idx)?;
         }
-
-        self.current_rows += 1;
+        self.current_rows += rows.len();
         Ok(())
     }
 
     /// Build the RecordBatch from accumulated rows
-    pub fn build(mut self) -> Result<RecordBatch> {
+    fn build(mut self) -> Result<RecordBatch> {
         let arrays: Result<Vec<Arc<dyn Array>>> = self
             .builders
             .iter_mut()
@@ -923,19 +952,14 @@ impl RowBatchBuilder {
     }
 
     /// Get the current number of rows in the builder
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.current_rows
-    }
-
-    /// Check if the builder is empty
-    pub fn is_empty(&self) -> bool {
-        self.current_rows == 0
     }
 }
 
 /// Trait for type-erased array builders
 trait ArrayBuilder {
-    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()>;
+    fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()>;
     fn finish(&mut self) -> Result<Arc<dyn Array>>;
 }
 
@@ -1089,24 +1113,9 @@ impl AdaptiveBinaryBuilder {
 
 // Implementations for common types
 impl ArrayBuilder for TypedArrayBuilder<BooleanBuilder> {
-    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
-        match row.get_bool(col_idx) {
-            Some(val) => self.builder.append_value(val),
-            None => self.builder.append_null(),
-        }
-        Ok(())
-    }
-
-    fn finish(&mut self) -> Result<Arc<dyn Array>> {
-        Ok(Arc::new(self.builder.finish()))
-    }
-}
-
-impl ArrayBuilder for TypedArrayBuilder<StringBuilder> {
-    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
-        match row.get_string(col_idx) {
-            Some(val) => self.builder.append_value(val),
-            None => self.builder.append_null(),
+    fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
+        for row in rows {
+            self.builder.append_option(row.get_bool(col_idx));
         }
         Ok(())
     }
@@ -1117,10 +1126,9 @@ impl ArrayBuilder for TypedArrayBuilder<StringBuilder> {
 }
 
 impl ArrayBuilder for TypedArrayBuilder<Int64Builder> {
-    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
-        match row.get_i64(col_idx) {
-            Some(val) => self.builder.append_value(val),
-            None => self.builder.append_null(),
+    fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
+        for row in rows {
+            self.builder.append_option(row.get_i64(col_idx));
         }
         Ok(())
     }
@@ -1131,24 +1139,9 @@ impl ArrayBuilder for TypedArrayBuilder<Int64Builder> {
 }
 
 impl ArrayBuilder for TypedArrayBuilder<TimestampMillisecondBuilder> {
-    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
-        match row.get_timestamp(col_idx) {
-            Some(val) => self.builder.append_value(val),
-            None => self.builder.append_null(),
-        }
-        Ok(())
-    }
-
-    fn finish(&mut self) -> Result<Arc<dyn Array>> {
-        Ok(Arc::new(self.builder.finish()))
-    }
-}
-
-impl ArrayBuilder for TypedArrayBuilder<BinaryBuilder> {
-    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
-        match row.get_binary(col_idx) {
-            Some(val) => self.builder.append_value(val),
-            None => self.builder.append_null(),
+    fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
+        for row in rows {
+            self.builder.append_option(row.get_timestamp(col_idx));
         }
         Ok(())
     }
@@ -1159,14 +1152,14 @@ impl ArrayBuilder for TypedArrayBuilder<BinaryBuilder> {
 }
 
 impl ArrayBuilder for AdaptiveStringBuilder {
-    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
-        match row.get_string(col_idx) {
-            Some(val) => {
+    fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
+        for row in rows {
+            let value = row.get_string(col_idx);
+            if let Some(val) = &value {
                 // Record the size for future optimization
                 self.alloc_stats.record_string(val.len());
-                self.builder.append_value(val);
             }
-            None => self.builder.append_null(),
+            self.builder.append_option(value);
         }
         Ok(())
     }
@@ -1177,14 +1170,14 @@ impl ArrayBuilder for AdaptiveStringBuilder {
 }
 
 impl ArrayBuilder for AdaptiveBinaryBuilder {
-    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
-        match row.get_binary(col_idx) {
-            Some(val) => {
+    fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
+        for row in rows {
+            let value = row.get_binary(col_idx);
+            if let Some(val) = &value {
                 // Record the size for future optimization
                 self.alloc_stats.record_binary(val.len());
-                self.builder.append_value(val);
             }
-            None => self.builder.append_null(),
+            self.builder.append_option(value);
         }
         Ok(())
     }
@@ -1198,10 +1191,9 @@ impl ArrayBuilder for AdaptiveBinaryBuilder {
 macro_rules! impl_numeric_builder {
     ($builder_type:ty, $getter:ident, $value_type:ty) => {
         impl ArrayBuilder for TypedArrayBuilder<$builder_type> {
-            fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
-                match row.$getter(col_idx) {
-                    Some(val) => self.builder.append_value(val),
-                    None => self.builder.append_null(),
+            fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
+                for row in rows {
+                    self.builder.append_option(row.$getter(col_idx));
                 }
                 Ok(())
             }
@@ -1335,10 +1327,11 @@ mod tests {
 
         // Test 1: Compatible rows should work
         let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
-        let rows1 = Rows::new(&schema1, 10, alloc_stats.clone()).expect("Failed to create rows1");
+        let rows1 =
+            Rows::new(&schema1, 10, 5, alloc_stats.clone()).expect("Failed to create rows1");
 
         // Test 2: Incompatible rows should fail validation
-        let rows2 = Rows::new(&schema2, 10, alloc_stats).expect("Failed to create rows2");
+        let rows2 = Rows::new(&schema2, 10, 5, alloc_stats).expect("Failed to create rows2");
 
         // Mock the validation (since we can't easily create a BulkStreamWriter in tests)
         // In practice, this would be tested with a real BulkStreamWriter
@@ -1365,7 +1358,7 @@ mod tests {
         ];
 
         let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
-        let mut rows = Rows::new(&schema, 5, alloc_stats).expect("Failed to create rows");
+        let mut rows = Rows::new(&schema, 5, 5, alloc_stats).expect("Failed to create rows");
 
         // Test initial state
         assert_eq!(rows.len(), 0);
@@ -1378,8 +1371,8 @@ mod tests {
         let row2 = crate::table::Row::new()
             .add_values(vec![Value::Int64(2), Value::String("second".to_string())]);
 
-        rows.add_row(&row1).expect("Failed to add row1");
-        rows.add_row(&row2).expect("Failed to add row2");
+        rows.add_row(row1).expect("Failed to add row1");
+        rows.add_row(row2).expect("Failed to add row2");
 
         // Test state after adding rows
         assert_eq!(rows.len(), 2);

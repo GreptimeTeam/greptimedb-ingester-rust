@@ -398,7 +398,7 @@ fn create_test_batch_bulk(
         .unwrap()
         .as_millis() as i64;
 
-    let mut rows = bulk_writer.alloc_rows_buffer(batch_size)?;
+    let mut rows = bulk_writer.alloc_rows_buffer(batch_size, 1024)?;
 
     for i in 0..batch_size {
         let global_idx = batch_id * batch_size + i;
@@ -413,7 +413,7 @@ fn create_test_batch_bulk(
             Value::Float64(temperature),
             Value::Int64(status),
         ]);
-        rows.add_row(&row)?;
+        rows.add_row(row)?;
     }
 
     Ok(rows)

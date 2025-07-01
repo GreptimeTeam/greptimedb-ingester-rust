@@ -85,87 +85,87 @@ async fn main() -> greptimedb_ingester::Result<()> {
         SensorData { timestamp: 1234567890001, device_id: "device_002".to_string(), temperature: 24.0 },
     ];
 
-// Step 1: Create table manually (bulk API requires table to exist beforehand)
-// Option A: Use insert API to create table
-let database = Database::new_with_dbname("public", client.clone());
-let init_schema = vec![
-    timestamp("ts", ColumnDataType::TimestampMillisecond),
-    field("device_id", ColumnDataType::String),
-    field("temperature", ColumnDataType::Float64),
-];
+    // Step 1: Create table manually (bulk API requires table to exist beforehand)
+    // Option A: Use insert API to create table
+    let database = Database::new_with_dbname("public", client.clone());
+    let init_schema = vec![
+        timestamp("ts", ColumnDataType::TimestampMillisecond),
+        field("device_id", ColumnDataType::String),
+        field("temperature", ColumnDataType::Float64),
+    ];
 
-let init_request = RowInsertRequests {
-    inserts: vec![RowInsertRequest {
-        table_name: "sensor_readings".to_string(),
-        rows: Some(Rows {
-            schema: init_schema,
-            rows: vec![greptimedb_ingester::api::v1::Row {
-                values: vec![
-                    timestamp_millisecond_value(current_timestamp()),
-                    string_value("init_device".to_string()),
-                    f64_value(0.0),
-                ],
-            }],
-        }),
-    }],
-};
+    let init_request = RowInsertRequests {
+        inserts: vec![RowInsertRequest {
+            table_name: "sensor_readings".to_string(),
+            rows: Some(Rows {
+                schema: init_schema,
+                rows: vec![greptimedb_ingester::api::v1::Row {
+                    values: vec![
+                        timestamp_millisecond_value(current_timestamp()),
+                        string_value("init_device".to_string()),
+                        f64_value(0.0),
+                    ],
+                }],
+            }),
+        }],
+    };
 
-database.insert(init_request).await?; // Table is now created
+    database.insert(init_request).await?; // Table is now created
 
-// Option B: Create table using SQL (if you have SQL access)
-// CREATE TABLE sensor_readings (
-//     ts TIMESTAMP TIME INDEX,
-//     device_id STRING,
-//     temperature DOUBLE
-// );
+    // Option B: Create table using SQL (if you have SQL access)
+    // CREATE TABLE sensor_readings (
+    //     ts TIMESTAMP TIME INDEX,
+    //     device_id STRING,
+    //     temperature DOUBLE
+    // );
 
-// Step 2: Now use bulk API for high-throughput operations
-let bulk_inserter = BulkInserter::new(client, "public");
+    // Step 2: Now use bulk API for high-throughput operations
+    let bulk_inserter = BulkInserter::new(client, "public");
 
-// Define table schema (must match the insert API schema above)
-let table_template = Table::builder()
-    .name("sensor_readings")
-    .build()
-    .unwrap()
-    .add_timestamp("ts", ColumnDataType::TimestampMillisecond)
-    .add_field("device_id", ColumnDataType::String)
-    .add_field("temperature", ColumnDataType::Float64);
+    // Define table schema (must match the insert API schema above)
+    let table_template = Table::builder()
+        .name("sensor_readings")
+        .build()
+        .unwrap()
+        .add_timestamp("ts", ColumnDataType::TimestampMillisecond)
+        .add_field("device_id", ColumnDataType::String)
+        .add_field("temperature", ColumnDataType::Float64);
 
-// Create high-performance stream writer
-let mut bulk_writer = bulk_inserter
-    .create_bulk_stream_writer(
-        &table_template,
-        Some(BulkWriteOptions::default()
-            .with_parallelism(8)            // 8 concurrent requests
-            .with_compression(CompressionType::Zstd) // Enable Zstandard compression
-            .with_timeout(Duration::from_secs(60))   // 60s timeout
-        ),
-    )
-    .await?;
+    // Create high-performance stream writer
+    let mut bulk_writer = bulk_inserter
+        .create_bulk_stream_writer(
+            &table_template,
+            Some(BulkWriteOptions::default()
+                .with_parallelism(8)            // 8 concurrent requests
+                .with_compression(CompressionType::Zstd) // Enable Zstandard compression
+                .with_timeout(Duration::from_secs(60))   // 60s timeout
+            ),
+        )
+        .await?;
 
-// Method 1: Optimized API (recommended for production)
-let mut rows1 = bulk_writer.alloc_rows_buffer(1000)?;  // Shares schema Arc
-for data in &sensor_data {
-    let row = Row::new().add_values(vec![
-        Value::Timestamp(data.timestamp),
-        Value::String(data.device_id.clone()),
-        Value::Float64(data.temperature),
-    ]);
-    rows1.add_row(&row)?;
-}
-let request_id1 = bulk_writer.write_rows_async(rows1).await?;
+    // Method 1: Optimized API (recommended for production)
+    let mut rows1 = bulk_writer.alloc_rows_buffer(1000, 1024)?;  // capacity: 1000, row_buffer_size: 1024
+    for data in &sensor_data {
+        let row = Row::new().add_values(vec![
+            Value::Timestamp(data.timestamp),
+            Value::String(data.device_id.clone()),
+            Value::Float64(data.temperature),
+        ]);
+        rows1.add_row(row)?;
+    }
+    let request_id1 = bulk_writer.write_rows_async(rows1).await?;
 
-// Method 2: Schema-safe API
-let mut rows2 = bulk_writer.alloc_rows_buffer(1000)?;
-for data in &sensor_data {
-    let row = bulk_writer.new_row()
-        .set("ts", Value::Timestamp(data.timestamp))?
-        .set("device_id", Value::String(data.device_id.clone()))?
-        .set("temperature", Value::Float64(data.temperature))?
-        .build()?;
-    rows2.add_row(&row)?;
-}
-let request_id2 = bulk_writer.write_rows_async(rows2).await?;
+    // Method 2: Schema-safe API
+    let mut rows2 = bulk_writer.alloc_rows_buffer(1000, 1024)?;  // capacity: 1000, row_buffer_size: 1024
+    for data in &sensor_data {
+        let row = bulk_writer.new_row()
+            .set("ts", Value::Timestamp(data.timestamp))?
+            .set("device_id", Value::String(data.device_id.clone()))?
+            .set("temperature", Value::Float64(data.temperature))?
+            .build()?;
+        rows2.add_row(row)?;
+    }
+    let request_id2 = bulk_writer.write_rows_async(rows2).await?;
 
     // Wait for all operations to complete
     let responses = bulk_writer.wait_for_all_pending().await?;
@@ -231,13 +231,13 @@ use std::sync::Arc;
 
 async fn example(bulk_writer: &BulkStreamWriter, table_schema: &[Column]) -> greptimedb_ingester::Result<()> {
     // Recommended: Use writer-bound buffer allocation
-    let mut rows = bulk_writer.alloc_rows_buffer(1000)?;
+    let mut rows = bulk_writer.alloc_rows_buffer(1000, 1024)?;  // capacity: 1000, row_buffer_size: 1024
     // Shares Arc<Schema> with writer for optimal performance
     // Automatic schema compatibility
     
     // Alternative: Direct allocation (legacy approach)
     let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
-    let mut rows = Rows::new(table_schema, 1000, alloc_stats)?;
+    let mut rows = Rows::new(table_schema, 1000, 1024, alloc_stats)?;  // capacity: 1000, row_buffer_size: 1024, alloc_stats
     // Requires schema conversion and validation overhead
     Ok(())
 }
