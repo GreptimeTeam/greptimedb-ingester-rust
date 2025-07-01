@@ -231,13 +231,13 @@ use std::sync::Arc;
 
 async fn example(bulk_writer: &BulkStreamWriter, table_schema: &[Column]) -> greptimedb_ingester::Result<()> {
     // Recommended: Use writer-bound buffer allocation
-    let mut rows = bulk_writer.alloc_rows_buffer(1000, 1024)?;  // capacity: 1000, row_buffer_size: 1024
+    let mut rows = bulk_writer.alloc_rows_buffer(10000, 1024)?;  // capacity: 10000, row_buffer_size: 1024
     // Shares Arc<Schema> with writer for optimal performance
     // Automatic schema compatibility
     
     // Alternative: Direct allocation (legacy approach)
     let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
-    let mut rows = Rows::new(table_schema, 1000, 1024, alloc_stats)?;  // capacity: 1000, row_buffer_size: 1024, alloc_stats
+    let mut rows = Rows::new(table_schema, 10000, 1024, alloc_stats)?;  // capacity: 10000, row_buffer_size: 1024, alloc_stats
     // Requires schema conversion and validation overhead
     Ok(())
 }
