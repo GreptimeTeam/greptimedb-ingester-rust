@@ -184,11 +184,11 @@ impl BulkInserter {
     /// and creates a `BulkStreamWriter` bound to that schema.
     pub async fn create_bulk_stream_writer(
         &self,
-        table: &TableSchema,
+        table_schema: &TableSchema,
         options: Option<BulkWriteOptions>,
     ) -> Result<BulkStreamWriter> {
         let options = options.unwrap_or_default();
-        BulkStreamWriter::new(&self.database, &table.name, table.columns.clone(), options).await
+        BulkStreamWriter::new(&self.database, table_schema, options).await
     }
 }
 
@@ -249,8 +249,7 @@ impl BulkWriteOptions {
 pub struct BulkStreamWriter {
     sender: mpsc::Sender<FlightData>,
     response_stream: Pin<Box<dyn Stream<Item = Result<DoPutResponse>>>>,
-    table_name: String,
-    table_schema: Vec<Column>,
+    table_schema: TableSchema,
     // Cache the Arrow schema to avoid recreating it for each batch
     arrow_schema: Arc<Schema>,
     // Pre-computed field name to index mapping for O(1) lookup in RowBuilder
@@ -273,8 +272,7 @@ impl BulkStreamWriter {
     /// Create a new bulk stream writer bound to a specific table schema
     pub async fn new(
         database: &Database,
-        table_name: &str,
-        table_schema: Vec<Column>,
+        table_schema: &TableSchema,
         options: BulkWriteOptions,
     ) -> Result<Self> {
         // Create the encoder with compression settings
@@ -282,6 +280,7 @@ impl BulkStreamWriter {
 
         // Convert table schema to Arrow schema
         let fields: Result<Vec<Field>> = table_schema
+            .columns()
             .iter()
             .map(|col| {
                 column_to_arrow_data_type(col)
@@ -292,6 +291,7 @@ impl BulkStreamWriter {
 
         // Pre-compute field name to index mapping for O(1) lookups in RowBuilder
         let field_map: HashMap<String, usize> = table_schema
+            .columns()
             .iter()
             .enumerate()
             .map(|(i, col)| (col.name.clone(), i))
@@ -307,8 +307,7 @@ impl BulkStreamWriter {
         Ok(Self {
             sender,
             response_stream,
-            table_name: table_name.to_string(),
-            table_schema,
+            table_schema: table_schema.clone(),
             arrow_schema,
             field_map,
             next_request_id: 0,
@@ -499,7 +498,7 @@ impl BulkStreamWriter {
     /// This ensures schema compatibility and provides optimal performance
     pub fn alloc_rows_buffer(&self, capacity: usize, row_buffer_size: usize) -> Result<Rows> {
         Rows::with_arrow_schema(
-            &self.table_schema,
+            self.column_schemas(),
             self.arrow_schema.clone(),
             capacity,
             row_buffer_size,
@@ -512,13 +511,19 @@ impl BulkStreamWriter {
     /// Uses O(1) field name lookup for optimal performance
     #[must_use]
     pub fn new_row(&self) -> RowBuilder {
-        RowBuilder::new(&self.table_schema, &self.field_map)
+        RowBuilder::new(self.column_schemas(), &self.field_map)
     }
 
-    /// Get the table schema that this writer is bound to
+    /// Get the table name that this writer is bound to
     #[must_use]
-    pub fn table_schema(&self) -> &[Column] {
-        &self.table_schema
+    pub fn table_name(&self) -> &str {
+        self.table_schema.name()
+    }
+
+    /// Get the column schemas that this writer is bound to
+    #[must_use]
+    pub fn column_schemas(&self) -> &[Column] {
+        self.table_schema.columns()
     }
 
     /// Helper method to handle a single response
@@ -558,7 +563,7 @@ impl BulkStreamWriter {
 
             schema_data.flight_descriptor = Some(FlightDescriptor {
                 r#type: arrow_flight::flight_descriptor::DescriptorType::Path as i32,
-                path: vec![self.table_name.clone()],
+                path: vec![self.table_name().to_string()],
                 ..Default::default()
             });
 
@@ -812,12 +817,12 @@ pub struct Rows {
 impl Rows {
     /// Create a new Rows collection with the given schema and capacity
     pub fn new(
-        table_schema: &[Column],
+        column_schemas: &[Column],
         capacity: usize,
         row_buffer_size: usize,
         alloc_stats: Arc<AdaptiveAllocStats>,
     ) -> Result<Self> {
-        let builder = RowBatchBuilder::new(table_schema, capacity, alloc_stats)?;
+        let builder = RowBatchBuilder::new(column_schemas, capacity, alloc_stats)?;
         let schema = builder.schema.clone();
 
         Ok(Self {
@@ -830,14 +835,14 @@ impl Rows {
 
     /// Create a new Rows collection with a pre-computed Arrow schema
     fn with_arrow_schema(
-        table_schema: &[Column],
+        column_schemas: &[Column],
         arrow_schema: Arc<Schema>,
         capacity: usize,
         row_buffer_size: usize,
         alloc_stats: Arc<AdaptiveAllocStats>,
     ) -> Result<Self> {
         let builder = RowBatchBuilder::with_arrow_schema(
-            table_schema,
+            column_schemas,
             arrow_schema.clone(),
             capacity,
             alloc_stats,
@@ -922,11 +927,11 @@ pub struct RowBatchBuilder {
 impl RowBatchBuilder {
     /// Create a new RowBatchBuilder with the given schema and capacity
     fn new(
-        table_schema: &[Column],
+        column_schemas: &[Column],
         capacity: usize,
         alloc_stats: Arc<AdaptiveAllocStats>,
     ) -> Result<Self> {
-        let fields: Result<Vec<Field>> = table_schema
+        let fields: Result<Vec<Field>> = column_schemas
             .iter()
             .map(|col| {
                 column_to_arrow_data_type(col)
@@ -935,7 +940,7 @@ impl RowBatchBuilder {
             .collect();
         let schema = Arc::new(Schema::new(fields?));
 
-        let builders: Result<Vec<ArrayBuilderEnum>> = table_schema
+        let builders: Result<Vec<ArrayBuilderEnum>> = column_schemas
             .iter()
             .enumerate()
             .map(|(col_idx, col)| create_array_builder(col, capacity, col_idx, alloc_stats.clone()))
@@ -950,12 +955,12 @@ impl RowBatchBuilder {
 
     /// Create a new RowBatchBuilder with a pre-computed Arrow schema
     fn with_arrow_schema(
-        table_schema: &[Column],
+        column_schemas: &[Column],
         schema: Arc<Schema>,
         capacity: usize,
         alloc_stats: Arc<AdaptiveAllocStats>,
     ) -> Result<Self> {
-        let builders: Result<Vec<ArrayBuilderEnum>> = table_schema
+        let builders: Result<Vec<ArrayBuilderEnum>> = column_schemas
             .iter()
             .enumerate()
             .map(|(col_idx, col)| create_array_builder(col, capacity, col_idx, alloc_stats.clone()))

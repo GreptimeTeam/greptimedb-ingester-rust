@@ -105,7 +105,7 @@ fn create_test_rows_safe(
 fn create_test_rows(
     batch_id: usize,
     rows_per_batch: usize,
-    table_schema: &[Column],
+    column_schemas: &[Column],
 ) -> Result<Rows> {
     let current_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -113,7 +113,7 @@ fn create_test_rows(
         .as_millis() as i64;
 
     let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
-    let mut rows = Rows::new(table_schema, rows_per_batch, 1024, alloc_stats)?;
+    let mut rows = Rows::new(column_schemas, rows_per_batch, 1024, alloc_stats)?;
     for i in 0..rows_per_batch {
         let global_idx = batch_id * rows_per_batch + i;
         let timestamp = current_time + (global_idx as i64 * 50); // 50ms intervals
@@ -184,7 +184,7 @@ async fn run_sequential_writes() -> Result<Duration> {
             create_test_rows_optimized(&bulk_writer, batch_num, rows_per_batch)?
         } else {
             // Fallback to legacy API for comparison
-            create_test_rows(batch_num, rows_per_batch, bulk_writer.table_schema())?
+            create_test_rows(batch_num, rows_per_batch, bulk_writer.column_schemas())?
         };
         let response = bulk_writer.write_rows(rows).await?;
         total_rows += response.affected_rows();
@@ -266,7 +266,7 @@ async fn run_parallel_writes() -> Result<Duration> {
         let rows = match batch_num % 3 {
             0 => create_test_rows_optimized(&bulk_writer, batch_num, rows_per_batch)?,
             1 => create_test_rows_safe(&bulk_writer, batch_num, rows_per_batch)?,
-            _ => create_test_rows(batch_num, rows_per_batch, bulk_writer.table_schema())?,
+            _ => create_test_rows(batch_num, rows_per_batch, bulk_writer.column_schemas())?,
         };
         match bulk_writer.write_rows_async(rows).await {
             Ok(request_id) => {

@@ -30,10 +30,10 @@ pub enum DataTypeExtension {
 #[builder(setter(into))]
 pub struct TableSchema {
     /// Table name
-    pub name: String,
+    name: String,
     /// Table columns
     #[builder(default)]
-    pub columns: Vec<Column>,
+    columns: Vec<Column>,
 }
 
 impl TableSchema {
@@ -42,12 +42,14 @@ impl TableSchema {
         TableSchemaBuilder::default()
     }
 
-    /// Create a new table schema with pre-allocated capacity for columns
-    pub fn with_capacity(column_capacity: usize) -> Self {
-        Self {
-            name: String::new(),
-            columns: Vec::with_capacity(column_capacity),
-        }
+    /// Get the table name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the table columns
+    pub fn columns(&self) -> &[Column] {
+        &self.columns
     }
 
     /// Add a tag column (for indexing and grouping)
