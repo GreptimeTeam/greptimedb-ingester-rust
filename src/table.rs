@@ -156,92 +156,162 @@ impl Row {
 
     /// Get boolean value at index
     pub fn get_bool(&self, index: usize) -> Option<bool> {
-        self.values.get(index)?.as_bool()
+        match self.values.get(index)? {
+            Value::Boolean(v) => Some(*v),
+            _ => None,
+        }
     }
 
     /// Get i8 value at index
     pub fn get_i8(&self, index: usize) -> Option<i8> {
-        self.values.get(index)?.as_i8()
+        match self.values.get(index)? {
+            Value::Int8(v) => Some(*v),
+            _ => None,
+        }
     }
 
     /// Get i16 value at index
     pub fn get_i16(&self, index: usize) -> Option<i16> {
-        self.values.get(index)?.as_i16()
+        match self.values.get(index)? {
+            Value::Int16(v) => Some(*v),
+            _ => None,
+        }
     }
 
     /// Get i32 value at index
     pub fn get_i32(&self, index: usize) -> Option<i32> {
-        self.values.get(index)?.as_i32()
+        match self.values.get(index)? {
+            Value::Int32(v) => Some(*v),
+            _ => None,
+        }
     }
 
     /// Get i64 value at index
     pub fn get_i64(&self, index: usize) -> Option<i64> {
-        self.values.get(index)?.as_i64()
+        match self.values.get(index)? {
+            Value::Int64(v) => Some(*v),
+            _ => None,
+        }
     }
 
     /// Get u8 value at index
     pub fn get_u8(&self, index: usize) -> Option<u8> {
-        self.values.get(index)?.as_u8()
+        match self.values.get(index)? {
+            Value::Uint8(v) => Some(*v),
+            _ => None,
+        }
     }
 
     /// Get u16 value at index
     pub fn get_u16(&self, index: usize) -> Option<u16> {
-        self.values.get(index)?.as_u16()
+        match self.values.get(index)? {
+            Value::Uint16(v) => Some(*v),
+            _ => None,
+        }
     }
 
     /// Get u32 value at index
     pub fn get_u32(&self, index: usize) -> Option<u32> {
-        self.values.get(index)?.as_u32()
+        match self.values.get(index)? {
+            Value::Uint32(v) => Some(*v),
+            _ => None,
+        }
     }
 
     /// Get u64 value at index
     pub fn get_u64(&self, index: usize) -> Option<u64> {
-        self.values.get(index)?.as_u64()
+        match self.values.get(index)? {
+            Value::Uint64(v) => Some(*v),
+            _ => None,
+        }
     }
 
     /// Get f32 value at index
     pub fn get_f32(&self, index: usize) -> Option<f32> {
-        self.values.get(index)?.as_f32()
+        match self.values.get(index)? {
+            Value::Float32(v) => Some(*v),
+            _ => None,
+        }
     }
 
     /// Get f64 value at index
     pub fn get_f64(&self, index: usize) -> Option<f64> {
-        self.values.get(index)?.as_f64()
+        match self.values.get(index)? {
+            Value::Float64(v) => Some(*v),
+            _ => None,
+        }
     }
 
     /// Get binary value at index
     pub fn get_binary(&self, index: usize) -> Option<Vec<u8>> {
-        self.values.get(index)?.as_binary()
+        match self.values.get(index)? {
+            Value::Binary(v) => Some(v.clone()),
+            Value::String(v) => Some(v.as_bytes().to_vec()), // JSON type
+            _ => None,
+        }
+    }
+
+    /// Take binary value at index
+    pub fn take_binary(&mut self, index: usize) -> Option<Vec<u8>> {
+        let v = std::mem::replace(&mut self.values[index], Value::Null);
+        match v {
+            Value::Binary(v) => Some(v),
+            Value::String(v) => Some(v.into_bytes()), // JSON type
+            _ => None,
+        }
     }
 
     /// Get string value at index
     pub fn get_string(&self, index: usize) -> Option<String> {
-        self.values.get(index)?.as_string()
+        match self.values.get(index)? {
+            Value::String(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    /// Take string value at index
+    pub fn take_string(&mut self, index: usize) -> Option<String> {
+        let v = std::mem::replace(&mut self.values[index], Value::Null);
+        match v {
+            Value::String(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Get date value at index
     pub fn get_date(&self, index: usize) -> Option<i32> {
-        self.values.get(index)?.as_date()
+        match self.values.get(index)? {
+            Value::Date(v) => Some(*v),
+            _ => None,
+        }
     }
 
     /// Get datetime value at index
     pub fn get_datetime(&self, index: usize) -> Option<i64> {
-        self.values.get(index)?.as_datetime()
+        match self.values.get(index)? {
+            Value::Datetime(v) => Some(*v),
+            _ => None,
+        }
     }
 
     /// Get timestamp value at index (generic, supports all timestamp types)
     pub fn get_timestamp(&self, index: usize) -> Option<i64> {
-        self.values.get(index)?.as_timestamp()
-    }
-
-    /// Get JSON value at index
-    pub fn get_json(&self, index: usize) -> Option<String> {
-        self.values.get(index)?.as_json()
+        match self.values.get(index)? {
+            Value::Timestamp(v) => Some(*v),
+            Value::TimestampSecond(v) => Some(*v),
+            Value::TimestampMillisecond(v) => Some(*v),
+            Value::TimestampMicrosecond(v) => Some(*v),
+            Value::TimestampNanosecond(v) => Some(*v),
+            _ => None,
+        }
     }
 
     /// Get decimal128 value at index
     pub fn get_decimal128(&self, index: usize) -> Option<i128> {
-        self.values.get(index)?.as_decimal128()
+        match self.values.get(index)? {
+            Value::Decimal128(v) => Some(*v),
+            _ => None,
+        }
     }
 }
 
@@ -286,7 +356,7 @@ pub enum Value {
     TimeMicrosecond(i64),
     TimeNanosecond(i64),
 
-    // Decimal type (precision and scale are stored in the column schema)
+    // Decimal type (`precision` and `scale` are placed in the column schema)
     Decimal128(i128),
 
     // JSON type (stored as string)
@@ -294,305 +364,4 @@ pub enum Value {
 
     // Null value
     Null,
-}
-
-impl Value {
-    // Boolean accessors
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            Value::Boolean(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    // Integer accessors
-    pub fn as_i8(&self) -> Option<i8> {
-        match self {
-            Value::Int8(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_i16(&self) -> Option<i16> {
-        match self {
-            Value::Int16(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_i32(&self) -> Option<i32> {
-        match self {
-            Value::Int32(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_i64(&self) -> Option<i64> {
-        match self {
-            Value::Int64(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_u8(&self) -> Option<u8> {
-        match self {
-            Value::Uint8(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_u16(&self) -> Option<u16> {
-        match self {
-            Value::Uint16(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_u32(&self) -> Option<u32> {
-        match self {
-            Value::Uint32(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_u64(&self) -> Option<u64> {
-        match self {
-            Value::Uint64(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    // Float accessors
-    pub fn as_f32(&self) -> Option<f32> {
-        match self {
-            Value::Float32(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_f64(&self) -> Option<f64> {
-        match self {
-            Value::Float64(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    // String and Binary accessors
-    pub fn as_binary(&self) -> Option<Vec<u8>> {
-        match self {
-            Value::Binary(v) => Some(v.clone()),
-            _ => None,
-        }
-    }
-
-    /// Get the binary value as a slice (zero-copy)
-    pub fn as_binary_ref(&self) -> Option<&[u8]> {
-        match self {
-            Value::Binary(v) => Some(v),
-            _ => None,
-        }
-    }
-
-    pub fn as_string(&self) -> Option<String> {
-        match self {
-            Value::String(v) => Some(v.clone()),
-            _ => None,
-        }
-    }
-
-    /// Get the string value as a str slice (zero-copy)
-    pub fn as_string_ref(&self) -> Option<&str> {
-        match self {
-            Value::String(v) => Some(v),
-            _ => None,
-        }
-    }
-
-    // Date and Time accessors
-    pub fn as_date(&self) -> Option<i32> {
-        match self {
-            Value::Date(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_datetime(&self) -> Option<i64> {
-        match self {
-            Value::Datetime(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    // Timestamp accessors
-    pub fn as_timestamp(&self) -> Option<i64> {
-        match self {
-            Value::Timestamp(v) => Some(*v),
-            Value::TimestampSecond(v) => Some(*v),
-            Value::TimestampMillisecond(v) => Some(*v),
-            Value::TimestampMicrosecond(v) => Some(*v),
-            Value::TimestampNanosecond(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_timestamp_second(&self) -> Option<i64> {
-        match self {
-            Value::TimestampSecond(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_timestamp_millisecond(&self) -> Option<i64> {
-        match self {
-            Value::TimestampMillisecond(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_timestamp_microsecond(&self) -> Option<i64> {
-        match self {
-            Value::TimestampMicrosecond(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_timestamp_nanosecond(&self) -> Option<i64> {
-        match self {
-            Value::TimestampNanosecond(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    // Time accessors
-    pub fn as_time_second(&self) -> Option<i32> {
-        match self {
-            Value::TimeSecond(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_time_millisecond(&self) -> Option<i32> {
-        match self {
-            Value::TimeMillisecond(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_time_microsecond(&self) -> Option<i64> {
-        match self {
-            Value::TimeMicrosecond(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_time_nanosecond(&self) -> Option<i64> {
-        match self {
-            Value::TimeNanosecond(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    // Decimal accessor
-    pub fn as_decimal128(&self) -> Option<i128> {
-        match self {
-            Value::Decimal128(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    // JSON accessor
-    pub fn as_json(&self) -> Option<String> {
-        match self {
-            Value::Json(v) => Some(v.clone()),
-            _ => None,
-        }
-    }
-}
-
-// Convenient constructors for values
-impl From<bool> for Value {
-    fn from(v: bool) -> Self {
-        Value::Boolean(v)
-    }
-}
-
-// Integer types
-impl From<i8> for Value {
-    fn from(v: i8) -> Self {
-        Value::Int8(v)
-    }
-}
-
-impl From<i16> for Value {
-    fn from(v: i16) -> Self {
-        Value::Int16(v)
-    }
-}
-
-impl From<i32> for Value {
-    fn from(v: i32) -> Self {
-        Value::Int32(v)
-    }
-}
-
-impl From<i64> for Value {
-    fn from(v: i64) -> Self {
-        Value::Int64(v)
-    }
-}
-
-impl From<u8> for Value {
-    fn from(v: u8) -> Self {
-        Value::Uint8(v)
-    }
-}
-
-impl From<u16> for Value {
-    fn from(v: u16) -> Self {
-        Value::Uint16(v)
-    }
-}
-
-impl From<u32> for Value {
-    fn from(v: u32) -> Self {
-        Value::Uint32(v)
-    }
-}
-
-impl From<u64> for Value {
-    fn from(v: u64) -> Self {
-        Value::Uint64(v)
-    }
-}
-
-// Float types
-impl From<f32> for Value {
-    fn from(v: f32) -> Self {
-        Value::Float32(v)
-    }
-}
-
-impl From<f64> for Value {
-    fn from(v: f64) -> Self {
-        Value::Float64(v)
-    }
-}
-
-// Binary type
-impl From<Vec<u8>> for Value {
-    fn from(v: Vec<u8>) -> Self {
-        Value::Binary(v)
-    }
-}
-
-impl From<String> for Value {
-    fn from(v: String) -> Self {
-        Value::String(v)
-    }
-}
-
-impl From<&str> for Value {
-    fn from(v: &str) -> Self {
-        Value::String(v.to_string())
-    }
 }

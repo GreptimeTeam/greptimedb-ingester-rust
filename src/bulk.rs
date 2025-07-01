@@ -876,7 +876,7 @@ impl Rows {
 
         // Process all rows in the buffer at once for better performance
         let rows: Vec<Row> = self.row_buffer.drain(..).collect();
-        self.builder.add_rows(&rows)?;
+        self.builder.add_rows(rows)?;
 
         Ok(())
     }
@@ -974,9 +974,9 @@ impl RowBatchBuilder {
     }
 
     /// Add multiple rows to the batch builder using batch operations
-    fn add_rows(&mut self, rows: &[Row]) -> Result<()> {
+    fn add_rows(&mut self, mut rows: Vec<Row>) -> Result<()> {
         for (col_idx, builder) in self.builders.iter_mut().enumerate() {
-            builder.append_values_from_rows(rows, col_idx)?;
+            builder.append_values_from_rows(&mut rows, col_idx)?;
         }
         self.current_rows += rows.len();
         Ok(())
@@ -1001,7 +1001,7 @@ impl RowBatchBuilder {
 
 /// Trait for type-erased array builders
 trait ArrayBuilder {
-    fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()>;
+    fn append_values_from_rows(&mut self, rows: &mut [Row], col_idx: usize) -> Result<()>;
     fn finish(&mut self) -> Result<Arc<dyn Array>>;
 }
 
@@ -1032,7 +1032,7 @@ enum ArrayBuilderEnum {
 }
 
 impl ArrayBuilderEnum {
-    fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
+    fn append_values_from_rows(&mut self, rows: &mut [Row], col_idx: usize) -> Result<()> {
         match self {
             ArrayBuilderEnum::Boolean(builder) => builder.append_values_from_rows(rows, col_idx),
             ArrayBuilderEnum::Int8(builder) => builder.append_values_from_rows(rows, col_idx),
@@ -1226,14 +1226,15 @@ impl AdaptiveBinaryBuilder {
 
 /// Adaptive string array builder that learns from historical data per column
 impl ArrayBuilder for AdaptiveStringBuilder {
-    fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
+    fn append_values_from_rows(&mut self, rows: &mut [Row], col_idx: usize) -> Result<()> {
         for row in rows {
-            let value = row.get_string(col_idx);
-            if let Some(val) = &value {
+            if let Some(value) = row.take_string(col_idx) {
                 // Record the size for future optimization
-                self.alloc_stats.record_size(self.column_index, val.len());
+                self.alloc_stats.record_size(self.column_index, value.len());
+                self.builder.append_value(value);
+            } else {
+                self.builder.append_null();
             }
-            self.builder.append_option(value);
         }
         Ok(())
     }
@@ -1245,14 +1246,15 @@ impl ArrayBuilder for AdaptiveStringBuilder {
 
 /// Adaptive binary array builder that learns from historical data per column
 impl ArrayBuilder for AdaptiveBinaryBuilder {
-    fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
+    fn append_values_from_rows(&mut self, rows: &mut [Row], col_idx: usize) -> Result<()> {
         for row in rows {
-            let value = row.get_binary(col_idx);
-            if let Some(val) = &value {
+            if let Some(value) = row.take_binary(col_idx) {
                 // Record the size for future optimization
-                self.alloc_stats.record_size(self.column_index, val.len());
+                self.alloc_stats.record_size(self.column_index, value.len());
+                self.builder.append_value(value);
+            } else {
+                self.builder.append_null();
             }
-            self.builder.append_option(value);
         }
         Ok(())
     }
@@ -1266,7 +1268,7 @@ impl ArrayBuilder for AdaptiveBinaryBuilder {
 macro_rules! impl_arrow_builder {
     ($builder_type:ty, $getter:ident, $value_type:ty) => {
         impl ArrayBuilder for $builder_type {
-            fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
+            fn append_values_from_rows(&mut self, rows: &mut [Row], col_idx: usize) -> Result<()> {
                 for row in rows {
                     self.append_option(row.$getter(col_idx));
                 }
@@ -1743,6 +1745,49 @@ mod tests {
         normal_window.add_sample(100);
         normal_window.add_sample(200);
         assert_eq!(normal_window.average(), 160); // 150 aligned up to 16-byte boundary
+    }
+
+    #[test]
+    fn test_json_column_handling() {
+        let schema = vec![
+            Column {
+                name: "id".to_string(),
+                data_type: ColumnDataType::Int64,
+                semantic_type: SemanticType::Field,
+                data_type_extension: None,
+            },
+            Column {
+                name: "data".to_string(),
+                data_type: ColumnDataType::Json,
+                semantic_type: SemanticType::Field,
+                data_type_extension: None,
+            },
+        ];
+
+        let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
+        let mut rows = Rows::new(&schema, 5, 5, alloc_stats).expect("Failed to create rows");
+
+        // Test JSON data stored as string that will be converted to binary
+        let json_data = r#"{"temperature": 23.5, "humidity": 65, "sensor": "DHT22"}"#;
+        let row = crate::table::Row::new()
+            .add_values(vec![Value::Int64(1), Value::Json(json_data.to_string())]);
+
+        rows.add_row(row).expect("Failed to add JSON row");
+
+        // Verify the row was added successfully
+        assert_eq!(rows.len(), 1);
+        assert!(!rows.is_empty());
+
+        // Convert to RecordBatch to test the JSON -> Binary conversion
+        let record_batch = RecordBatch::try_from(rows).expect("Failed to convert to RecordBatch");
+        assert_eq!(record_batch.num_rows(), 1);
+        assert_eq!(record_batch.num_columns(), 2);
+
+        // Verify schema mapping for JSON column
+        let schema = record_batch.schema();
+        let json_field = schema.field(1);
+        assert_eq!(json_field.name(), "data");
+        assert_eq!(json_field.data_type(), &arrow_schema::DataType::Binary);
     }
 
     #[test]
