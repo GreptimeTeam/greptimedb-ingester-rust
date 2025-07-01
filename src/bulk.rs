@@ -488,10 +488,9 @@ impl BulkStreamWriter {
         }
 
         // Close the sender to signal the end of the stream
-        self.sender
-            .close()
-            .await
-            .map_err(|_| error::CloseSenderSnafu.build())?;
+        // The result is ignored, as the stream being closed on the other
+        // end is not a critical error. We still want to return the responses.
+        let _ = self.sender.close().await;
 
         Ok(all_responses)
     }

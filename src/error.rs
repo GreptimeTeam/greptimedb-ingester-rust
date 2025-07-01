@@ -117,12 +117,6 @@ pub enum Error {
         location: Location,
     },
 
-    #[snafu(display("Failed to close sender channel"))]
-    CloseSender {
-        #[snafu(implicit)]
-        location: Location,
-    },
-
     #[snafu(display(
         "Request timeout after {:?} for request IDs: {:?}",
         timeout,
