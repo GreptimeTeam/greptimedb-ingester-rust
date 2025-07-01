@@ -97,43 +97,68 @@ impl SlidingWindow {
         let avg = self.sum / self.count;
         // Clamp to reasonable bounds: min 4 bytes (very short strings), max 8KB (large JSON/text)
         // This prevents excessive over-allocation while still allowing for larger data
-        avg.clamp(4, 8192)
+        let clamped = avg.clamp(4, 8192);
+
+        // Align to memory boundaries for better performance and reduced fragmentation
+        // Use power-of-2 alignment based on size ranges
+        Self::align_to_boundary(clamped)
+    }
+
+    /// Align memory size to appropriate boundaries for better allocation efficiency
+    #[inline]
+    fn align_to_boundary(size: usize) -> usize {
+        // Determine alignment mask directly for maximum efficiency
+        let mask = if size <= 64 {
+            7 // 8-byte alignment: mask = 8-1 = 7
+        } else if size <= 512 {
+            15 // 16-byte alignment: mask = 16-1 = 15
+        } else if size <= 2048 {
+            31 // 32-byte alignment: mask = 32-1 = 31
+        } else {
+            63 // 64-byte alignment: mask = 64-1 = 63
+        };
+
+        // Direct alignment calculation without intermediate variables
+        // This is mathematically equivalent to (size + align - 1) & !(align - 1)
+        // but avoids the bit shift and uses the precomputed mask
+        (size + mask) & !mask
     }
 }
 
-/// Adaptive memory allocation statistics for string/binary data using sliding windows
+/// Adaptive memory allocation statistics for variable-length data using per-column sliding windows
 #[derive(Debug)]
 pub struct AdaptiveAllocStats {
-    string_window: Mutex<SlidingWindow>,
-    binary_window: Mutex<SlidingWindow>,
+    // Per-column tracking: column_index -> sliding window for any variable-length type
+    column_windows: Mutex<HashMap<usize, SlidingWindow>>,
+    window_size: usize,
 }
 
 impl AdaptiveAllocStats {
     pub fn new(window_size: usize) -> Self {
         Self {
-            string_window: Mutex::new(SlidingWindow::new(window_size)),
-            binary_window: Mutex::new(SlidingWindow::new(window_size)),
+            column_windows: Mutex::new(HashMap::new()),
+            window_size,
         }
     }
 
-    fn record_string(&self, size: usize) {
-        let mut window = self.string_window.lock().unwrap();
+    /// Record variable-length data size for a specific column
+    fn record_size(&self, column_index: usize, size: usize) {
+        let mut windows = self.column_windows.lock().unwrap();
+        let window = windows
+            .entry(column_index)
+            .or_insert_with(|| SlidingWindow::new(self.window_size));
         window.add_sample(size);
     }
 
-    fn record_binary(&self, size: usize) {
-        let mut window = self.binary_window.lock().unwrap();
-        window.add_sample(size);
-    }
-
-    fn avg_string_size(&self) -> usize {
-        let window = self.string_window.lock().unwrap();
-        window.average()
-    }
-
-    fn avg_binary_size(&self) -> usize {
-        let window = self.binary_window.lock().unwrap();
-        window.average()
+    /// Get average size for a specific column, with default fallback for new columns
+    fn avg_size(&self, column_index: usize) -> usize {
+        let windows = self.column_windows.lock().unwrap();
+        if let Some(window) = windows.get(&column_index) {
+            window.average()
+        } else {
+            // Use SlidingWindow default for new columns (64 bytes)
+            64
+        }
     }
 }
 
@@ -899,7 +924,15 @@ impl RowBatchBuilder {
 
         let builders: Result<Vec<Box<dyn ArrayBuilder>>> = table_schema
             .iter()
-            .map(|col| create_array_builder_adaptive(col.data_type, capacity, alloc_stats.clone()))
+            .enumerate()
+            .map(|(column_index, col)| {
+                create_array_builder_adaptive(
+                    col.data_type,
+                    capacity,
+                    column_index,
+                    alloc_stats.clone(),
+                )
+            })
             .collect();
 
         Ok(Self {
@@ -918,7 +951,15 @@ impl RowBatchBuilder {
     ) -> Result<Self> {
         let builders: Result<Vec<Box<dyn ArrayBuilder>>> = table_schema
             .iter()
-            .map(|col| create_array_builder_adaptive(col.data_type, capacity, alloc_stats.clone()))
+            .enumerate()
+            .map(|(column_index, col)| {
+                create_array_builder_adaptive(
+                    col.data_type,
+                    capacity,
+                    column_index,
+                    alloc_stats.clone(),
+                )
+            })
             .collect();
 
         Ok(Self {
@@ -967,6 +1008,7 @@ trait ArrayBuilder {
 fn create_array_builder_adaptive(
     data_type: ColumnDataType,
     capacity: usize,
+    column_index: usize,
     alloc_stats: Arc<AdaptiveAllocStats>,
 ) -> Result<Box<dyn ArrayBuilder>> {
     Ok(match data_type {
@@ -1003,12 +1045,16 @@ fn create_array_builder_adaptive(
         ColumnDataType::Float64 => Box::new(TypedArrayBuilder::<Float64Builder>::new(
             Float64Builder::with_capacity(capacity),
         )),
-        ColumnDataType::String => {
-            Box::new(AdaptiveStringBuilder::new(capacity, alloc_stats.clone()))
-        }
-        ColumnDataType::Binary => {
-            Box::new(AdaptiveBinaryBuilder::new(capacity, alloc_stats.clone()))
-        }
+        ColumnDataType::String => Box::new(AdaptiveStringBuilder::new(
+            capacity,
+            column_index,
+            alloc_stats.clone(),
+        )),
+        ColumnDataType::Binary => Box::new(AdaptiveBinaryBuilder::new(
+            capacity,
+            column_index,
+            alloc_stats.clone(),
+        )),
         ColumnDataType::Date => Box::new(TypedArrayBuilder::<Date32Builder>::new(
             Date32Builder::with_capacity(capacity),
         )),
@@ -1055,10 +1101,16 @@ fn create_array_builder_adaptive(
                 Time64NanosecondBuilder::with_capacity(capacity),
             ))
         }
-        ColumnDataType::Decimal128 => {
-            Box::new(AdaptiveBinaryBuilder::new(capacity, alloc_stats.clone()))
-        }
-        ColumnDataType::Json => Box::new(AdaptiveBinaryBuilder::new(capacity, alloc_stats.clone())),
+        ColumnDataType::Decimal128 => Box::new(AdaptiveBinaryBuilder::new(
+            capacity,
+            column_index,
+            alloc_stats.clone(),
+        )),
+        ColumnDataType::Json => Box::new(AdaptiveBinaryBuilder::new(
+            capacity,
+            column_index,
+            alloc_stats.clone(),
+        )),
         _ => {
             return error::UnsupportedDataTypeSnafu {
                 data_type: format!("{data_type:?}. Not supported in RowBatchBuilder"),
@@ -1079,34 +1131,38 @@ impl<T> TypedArrayBuilder<T> {
     }
 }
 
-/// Adaptive string array builder that learns from historical data
+/// Adaptive string array builder that learns from historical data per column
 struct AdaptiveStringBuilder {
     builder: StringBuilder,
     alloc_stats: Arc<AdaptiveAllocStats>,
+    column_index: usize,
 }
 
 impl AdaptiveStringBuilder {
-    fn new(capacity: usize, alloc_stats: Arc<AdaptiveAllocStats>) -> Self {
-        let avg_size = alloc_stats.avg_string_size();
+    fn new(capacity: usize, column_index: usize, alloc_stats: Arc<AdaptiveAllocStats>) -> Self {
+        let avg_size = alloc_stats.avg_size(column_index);
         Self {
             builder: StringBuilder::with_capacity(capacity, capacity * avg_size),
             alloc_stats,
+            column_index,
         }
     }
 }
 
-/// Adaptive binary array builder that learns from historical data
+/// Adaptive binary array builder that learns from historical data per column
 struct AdaptiveBinaryBuilder {
     builder: BinaryBuilder,
     alloc_stats: Arc<AdaptiveAllocStats>,
+    column_index: usize,
 }
 
 impl AdaptiveBinaryBuilder {
-    fn new(capacity: usize, alloc_stats: Arc<AdaptiveAllocStats>) -> Self {
-        let avg_size = alloc_stats.avg_binary_size();
+    fn new(capacity: usize, column_index: usize, alloc_stats: Arc<AdaptiveAllocStats>) -> Self {
+        let avg_size = alloc_stats.avg_size(column_index);
         Self {
             builder: BinaryBuilder::with_capacity(capacity, capacity * avg_size),
             alloc_stats,
+            column_index,
         }
     }
 }
@@ -1157,7 +1213,7 @@ impl ArrayBuilder for AdaptiveStringBuilder {
             let value = row.get_string(col_idx);
             if let Some(val) = &value {
                 // Record the size for future optimization
-                self.alloc_stats.record_string(val.len());
+                self.alloc_stats.record_size(self.column_index, val.len());
             }
             self.builder.append_option(value);
         }
@@ -1175,7 +1231,7 @@ impl ArrayBuilder for AdaptiveBinaryBuilder {
             let value = row.get_binary(col_idx);
             if let Some(val) = &value {
                 // Record the size for future optimization
-                self.alloc_stats.record_binary(val.len());
+                self.alloc_stats.record_size(self.column_index, val.len());
             }
             self.builder.append_option(value);
         }
@@ -1444,22 +1500,22 @@ mod tests {
         // Test empty window
         assert_eq!(window.average(), 64); // Default fallback
 
-        // Add samples
+        // Add samples (results will be aligned)
         window.add_sample(100);
-        assert_eq!(window.average(), 100);
+        assert_eq!(window.average(), 112); // 100 aligned to 16-byte boundary
 
         window.add_sample(200);
-        assert_eq!(window.average(), 150); // (100 + 200) / 2
+        assert_eq!(window.average(), 160); // (100 + 200) / 2 = 150 -> 160 (aligned to 16)
 
         window.add_sample(300);
-        assert_eq!(window.average(), 200); // (100 + 200 + 300) / 3
+        assert_eq!(window.average(), 208); // (100 + 200 + 300) / 3 = 200 -> 208 (aligned to 16)
 
         // Test window wrap-around
         window.add_sample(400); // Replaces 100
-        assert_eq!(window.average(), 300); // (200 + 300 + 400) / 3
+        assert_eq!(window.average(), 304); // (200 + 300 + 400) / 3 = 300 -> 304 (aligned to 16)
 
         window.add_sample(500); // Replaces 200
-        assert_eq!(window.average(), 400); // (300 + 400 + 500) / 3
+        assert_eq!(window.average(), 400); // (300 + 400 + 500) / 3 = 400 -> 400 (already aligned to 16)
     }
 
     #[test]
@@ -1467,18 +1523,18 @@ mod tests {
         let stats = AdaptiveAllocStats::new(16);
 
         // Test initial defaults
-        assert_eq!(stats.avg_string_size(), 64);
-        assert_eq!(stats.avg_binary_size(), 64);
+        assert_eq!(stats.avg_size(0), 64);
+        assert_eq!(stats.avg_size(1), 64);
 
         // Record some samples
-        stats.record_string(100);
-        stats.record_string(200);
-        stats.record_binary(150);
-        stats.record_binary(250);
+        stats.record_size(0, 100);
+        stats.record_size(0, 200);
+        stats.record_size(1, 150);
+        stats.record_size(1, 250);
 
-        // Test averages
-        assert_eq!(stats.avg_string_size(), 150); // (100 + 200) / 2
-        assert_eq!(stats.avg_binary_size(), 200); // (150 + 250) / 2
+        // Test averages (results will be aligned)
+        assert_eq!(stats.avg_size(0), 160); // (100 + 200) / 2 = 150 -> 160 (aligned to 16)
+        assert_eq!(stats.avg_size(1), 208); // (150 + 250) / 2 = 200 -> 208 (aligned to 16)
     }
 
     #[test]
@@ -1488,19 +1544,19 @@ mod tests {
         // Test initial state
         assert_eq!(window.average(), 64); // Default fallback
 
-        // Add samples and verify averages
+        // Add samples and verify averages (with alignment)
         window.add_sample(100);
-        assert_eq!(window.average(), 100);
+        assert_eq!(window.average(), 112); // 100 -> 112 (aligned to 16)
 
         window.add_sample(200);
-        assert_eq!(window.average(), 150);
+        assert_eq!(window.average(), 160); // 150 -> 160 (aligned to 16)
 
         window.add_sample(300);
-        assert_eq!(window.average(), 200);
+        assert_eq!(window.average(), 208); // 200 -> 208 (aligned to 16)
 
         // Test overflow behavior with running sum
         window.add_sample(600); // Replaces 100, sum should be 200+300+600=1100
-        assert_eq!(window.average(), 366); // 1100/3 = 366.67 -> 366
+        assert_eq!(window.average(), 368); // 1100/3 = 366.67 -> 366 -> 368 (aligned to 16)
 
         // Test saturation protection
         window.add_sample(usize::MAX);
@@ -1516,18 +1572,55 @@ mod tests {
         window.add_sample(1); // Very small value
         window.add_sample(2);
         window.add_sample(3);
-        assert_eq!(window.average(), 4); // Should be clamped to minimum 4
+        assert_eq!(window.average(), 8); // Clamped to 4, then aligned to 8
 
         // Test upper bound clamping
         let mut large_window = SlidingWindow::new(2);
         large_window.add_sample(10000); // 10KB
         large_window.add_sample(20000); // 20KB
-        assert_eq!(large_window.average(), 8192); // Should be clamped to maximum 8KB
+        assert_eq!(large_window.average(), 8192); // Should be clamped to maximum 8KB (already aligned)
 
         // Test normal range
         let mut normal_window = SlidingWindow::new(2);
         normal_window.add_sample(100);
         normal_window.add_sample(200);
-        assert_eq!(normal_window.average(), 150); // Should not be clamped
+        assert_eq!(normal_window.average(), 160); // 150 aligned up to 16-byte boundary
+    }
+
+    #[test]
+    fn test_memory_alignment() {
+        // Test align_to_boundary function with optimized implementation
+        assert_eq!(SlidingWindow::align_to_boundary(1), 8); // 1 -> 8 (small)
+        assert_eq!(SlidingWindow::align_to_boundary(7), 8); // 7 -> 8 (small)
+        assert_eq!(SlidingWindow::align_to_boundary(8), 8); // 8 -> 8 (small)
+        assert_eq!(SlidingWindow::align_to_boundary(10), 16); // 10 -> 16 (small)
+        assert_eq!(SlidingWindow::align_to_boundary(64), 64); // 64 -> 64 (small boundary)
+        assert_eq!(SlidingWindow::align_to_boundary(65), 80); // 65 -> 80 (medium: 16-byte align)
+        assert_eq!(SlidingWindow::align_to_boundary(100), 112); // 100 -> 112 (medium: 16-byte align)
+        assert_eq!(SlidingWindow::align_to_boundary(512), 512); // 512 -> 512 (medium boundary)
+        assert_eq!(SlidingWindow::align_to_boundary(513), 544); // 513 -> 544 (large: 32-byte align)
+        assert_eq!(SlidingWindow::align_to_boundary(1000), 1024); // 1000 -> 1024 (large: 32-byte align)
+        assert_eq!(SlidingWindow::align_to_boundary(2048), 2048); // 2048 -> 2048 (large boundary)
+        assert_eq!(SlidingWindow::align_to_boundary(2049), 2112); // 2049 -> 2112 (very large: 64-byte align)
+        assert_eq!(SlidingWindow::align_to_boundary(3000), 3008); // 3000 -> 3008 (very large: 64-byte align)
+    }
+
+    #[test]
+    fn test_sliding_window_alignment_integration() {
+        let mut window = SlidingWindow::new(3);
+
+        // Test small string alignment (8-byte boundaries)
+        window.add_sample(10);
+        assert_eq!(window.average(), 16); // 10 aligned to 8-byte boundary -> 16
+
+        // Test medium string alignment (16-byte boundaries)
+        let mut medium_window = SlidingWindow::new(1);
+        medium_window.add_sample(100);
+        assert_eq!(medium_window.average(), 112); // 100 aligned to 16-byte boundary -> 112
+
+        // Test large string alignment (32-byte boundaries)
+        let mut large_window = SlidingWindow::new(1);
+        large_window.add_sample(1000);
+        assert_eq!(large_window.average(), 1024); // 1000 aligned to 32-byte boundary -> 1024
     }
 }
