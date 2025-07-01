@@ -1228,7 +1228,8 @@ impl AdaptiveBinaryBuilder {
 impl ArrayBuilder for AdaptiveStringBuilder {
     fn append_values_from_rows(&mut self, rows: &mut [Row], col_idx: usize) -> Result<()> {
         for row in rows {
-            if let Some(value) = row.take_string(col_idx) {
+            // Use unchecked version for performance - col_idx is guaranteed to be valid by schema
+            if let Some(value) = unsafe { row.take_string_unchecked(col_idx) } {
                 // Record the size for future optimization
                 self.alloc_stats.record_size(self.column_index, value.len());
                 self.builder.append_value(value);
@@ -1248,7 +1249,8 @@ impl ArrayBuilder for AdaptiveStringBuilder {
 impl ArrayBuilder for AdaptiveBinaryBuilder {
     fn append_values_from_rows(&mut self, rows: &mut [Row], col_idx: usize) -> Result<()> {
         for row in rows {
-            if let Some(value) = row.take_binary(col_idx) {
+            // Use unchecked version for performance - col_idx is guaranteed to be valid by schema
+            if let Some(value) = unsafe { row.take_binary_unchecked(col_idx) } {
                 // Record the size for future optimization
                 self.alloc_stats.record_size(self.column_index, value.len());
                 self.builder.append_value(value);
@@ -1270,7 +1272,8 @@ macro_rules! impl_arrow_builder {
         impl ArrayBuilder for $builder_type {
             fn append_values_from_rows(&mut self, rows: &mut [Row], col_idx: usize) -> Result<()> {
                 for row in rows {
-                    self.append_option(row.$getter(col_idx));
+                    // Use unchecked version for performance - col_idx is guaranteed to be valid by schema
+                    self.append_option(unsafe { row.$getter(col_idx) });
                 }
                 Ok(())
             }
@@ -1283,35 +1286,35 @@ macro_rules! impl_arrow_builder {
 }
 
 // Basic primitive types
-impl_arrow_builder!(BooleanBuilder, get_bool, bool);
-impl_arrow_builder!(Int8Builder, get_i8, i8);
-impl_arrow_builder!(Int16Builder, get_i16, i16);
-impl_arrow_builder!(Int32Builder, get_i32, i32);
-impl_arrow_builder!(Int64Builder, get_i64, i64);
-impl_arrow_builder!(UInt8Builder, get_u8, u8);
-impl_arrow_builder!(UInt16Builder, get_u16, u16);
-impl_arrow_builder!(UInt32Builder, get_u32, u32);
-impl_arrow_builder!(UInt64Builder, get_u64, u64);
-impl_arrow_builder!(Float32Builder, get_f32, f32);
-impl_arrow_builder!(Float64Builder, get_f64, f64);
+impl_arrow_builder!(BooleanBuilder, get_bool_unchecked, bool);
+impl_arrow_builder!(Int8Builder, get_i8_unchecked, i8);
+impl_arrow_builder!(Int16Builder, get_i16_unchecked, i16);
+impl_arrow_builder!(Int32Builder, get_i32_unchecked, i32);
+impl_arrow_builder!(Int64Builder, get_i64_unchecked, i64);
+impl_arrow_builder!(UInt8Builder, get_u8_unchecked, u8);
+impl_arrow_builder!(UInt16Builder, get_u16_unchecked, u16);
+impl_arrow_builder!(UInt32Builder, get_u32_unchecked, u32);
+impl_arrow_builder!(UInt64Builder, get_u64_unchecked, u64);
+impl_arrow_builder!(Float32Builder, get_f32_unchecked, f32);
+impl_arrow_builder!(Float64Builder, get_f64_unchecked, f64);
 
 // Timestamp types
-impl_arrow_builder!(TimestampSecondBuilder, get_timestamp, i64);
-impl_arrow_builder!(TimestampMillisecondBuilder, get_timestamp, i64);
-impl_arrow_builder!(TimestampMicrosecondBuilder, get_timestamp, i64);
-impl_arrow_builder!(TimestampNanosecondBuilder, get_timestamp, i64);
+impl_arrow_builder!(TimestampSecondBuilder, get_timestamp_unchecked, i64);
+impl_arrow_builder!(TimestampMillisecondBuilder, get_timestamp_unchecked, i64);
+impl_arrow_builder!(TimestampMicrosecondBuilder, get_timestamp_unchecked, i64);
+impl_arrow_builder!(TimestampNanosecondBuilder, get_timestamp_unchecked, i64);
 
 // Time types
-impl_arrow_builder!(Time32SecondBuilder, get_i32, i32);
-impl_arrow_builder!(Time32MillisecondBuilder, get_i32, i32);
-impl_arrow_builder!(Time64MicrosecondBuilder, get_i64, i64);
-impl_arrow_builder!(Time64NanosecondBuilder, get_i64, i64);
+impl_arrow_builder!(Time32SecondBuilder, get_i32_unchecked, i32);
+impl_arrow_builder!(Time32MillisecondBuilder, get_i32_unchecked, i32);
+impl_arrow_builder!(Time64MicrosecondBuilder, get_i64_unchecked, i64);
+impl_arrow_builder!(Time64NanosecondBuilder, get_i64_unchecked, i64);
 
 // Date types
-impl_arrow_builder!(Date32Builder, get_date, i32);
+impl_arrow_builder!(Date32Builder, get_date_unchecked, i32);
 
 // Decimal128 type (uses column-defined precision and scale)
-impl_arrow_builder!(Decimal128Builder, get_decimal128, i128);
+impl_arrow_builder!(Decimal128Builder, get_decimal128_unchecked, i128);
 
 /// A helper for building rows with schema-aware field access
 /// This prevents common mistakes like incorrect field order or types
