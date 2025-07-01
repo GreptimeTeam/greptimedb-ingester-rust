@@ -144,7 +144,7 @@ async fn main() -> greptimedb_ingester::Result<()> {
         .await?;
 
     // Method 1: Optimized API (recommended for production)
-    let mut rows1 = bulk_writer.alloc_rows_buffer(1000, 1024)?;  // capacity: 1000, row_buffer_size: 1024
+    let mut rows1 = bulk_writer.alloc_rows_buffer(10000, 1024)?;  // capacity: 10000, row_buffer_size: 1024
     for data in &sensor_data {
         let row = Row::new().add_values(vec![
             Value::Timestamp(data.timestamp),
@@ -156,7 +156,7 @@ async fn main() -> greptimedb_ingester::Result<()> {
     let request_id1 = bulk_writer.write_rows_async(rows1).await?;
 
     // Method 2: Schema-safe API
-    let mut rows2 = bulk_writer.alloc_rows_buffer(1000, 1024)?;  // capacity: 1000, row_buffer_size: 1024
+    let mut rows2 = bulk_writer.alloc_rows_buffer(10000, 1024)?;  // capacity: 10000, row_buffer_size: 1024
     for data in &sensor_data {
         let row = bulk_writer.new_row()
             .set("ts", Value::Timestamp(data.timestamp))?
