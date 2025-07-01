@@ -25,7 +25,7 @@ use greptimedb_ingester::bulk::AdaptiveAllocStats;
 use greptimedb_ingester::client::Client;
 use greptimedb_ingester::{
     BulkInserter, BulkStreamWriter, BulkWriteOptions, Column, ColumnDataType, CompressionType,
-    Result, Row, Rows, Table, Value,
+    Result, Row, Rows, TableSchema, Value,
 };
 use std::sync::Arc;
 
@@ -145,7 +145,7 @@ async fn run_sequential_writes() -> Result<Duration> {
 
     // Define time-series table schema for sensor data
     // IMPORTANT: Row data must match the exact column order defined in table_template
-    let table_template = Table::builder()
+    let table_template = TableSchema::builder()
         .name("high_throughput_sequential")
         .build()
         .unwrap()
@@ -224,7 +224,7 @@ async fn run_parallel_writes() -> Result<Duration> {
     let bulk_inserter = BulkInserter::new(grpc_client, &config.database);
 
     // IMPORTANT: Row data must match the exact column order defined in table_template
-    let table_template = Table::builder()
+    let table_template = TableSchema::builder()
         .name("high_throughput_parallel")
         .build()
         .unwrap()

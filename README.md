@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
 **Best for**: ETL operations, data migration, batch processing, log ingestion
 
 ```rust,no_run
-use greptimedb_ingester::{BulkInserter, BulkWriteOptions, ColumnDataType, CompressionType, Row, Table, Value};
+use greptimedb_ingester::{BulkInserter, BulkWriteOptions, ColumnDataType, CompressionType, Row, TableSchema, Value};
 use greptimedb_ingester::api::v1::*;
 use greptimedb_ingester::helpers::schema::*;
 use greptimedb_ingester::helpers::values::*;
@@ -123,7 +123,7 @@ async fn main() -> greptimedb_ingester::Result<()> {
     let bulk_inserter = BulkInserter::new(client, "public");
 
     // Define table schema (must match the insert API schema above)
-    let table_template = Table::builder()
+    let table_template = TableSchema::builder()
         .name("sensor_readings")
         .build()
         .unwrap()

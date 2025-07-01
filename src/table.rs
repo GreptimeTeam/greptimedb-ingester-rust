@@ -18,32 +18,35 @@ use derive_builder::Builder;
 
 use crate::api::v1::{ColumnDataType, SemanticType};
 
-/// Represents a time-series data table with schema and data
+/// Extended data type information for columns that need additional parameters
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DataTypeExtension {
+    /// Decimal128 with specific precision and scale
+    Decimal128 { precision: u8, scale: i8 },
+}
+
+/// Represents a time-series data table with schema
 #[derive(Debug, Clone, Builder)]
 #[builder(setter(into))]
-pub struct Table {
+pub struct TableSchema {
     /// Table name
     pub name: String,
     /// Table columns
     #[builder(default)]
     pub columns: Vec<Column>,
-    /// Table data rows
-    #[builder(default)]
-    pub rows: Vec<Row>,
 }
 
-impl Table {
-    /// Create a new table builder
-    pub fn builder() -> TableBuilder {
-        TableBuilder::default()
+impl TableSchema {
+    /// Create a new table schema builder
+    pub fn builder() -> TableSchemaBuilder {
+        TableSchemaBuilder::default()
     }
 
-    /// Create a new table with pre-allocated capacity for columns and rows
-    pub fn with_capacity(column_capacity: usize, row_capacity: usize) -> Self {
+    /// Create a new table schema with pre-allocated capacity for columns
+    pub fn with_capacity(column_capacity: usize) -> Self {
         Self {
             name: String::new(),
             columns: Vec::with_capacity(column_capacity),
-            rows: Vec::with_capacity(row_capacity),
         }
     }
 
@@ -53,6 +56,7 @@ impl Table {
             name: name.into(),
             data_type,
             semantic_type: SemanticType::Tag,
+            data_type_extension: None,
         });
         self
     }
@@ -63,6 +67,7 @@ impl Table {
             name: name.into(),
             data_type,
             semantic_type: SemanticType::Timestamp,
+            data_type_extension: None,
         });
         self
     }
@@ -73,19 +78,24 @@ impl Table {
             name: name.into(),
             data_type,
             semantic_type: SemanticType::Field,
+            data_type_extension: None,
         });
         self
     }
 
-    /// Add a data row
-    pub fn add_row(mut self, row: Row) -> Self {
-        self.rows.push(row);
-        self
-    }
-
-    /// Add multiple rows
-    pub fn add_rows(mut self, rows: Vec<Row>) -> Self {
-        self.rows.extend(rows);
+    /// Add a decimal128 field column with specific precision and scale
+    pub fn add_decimal128_field<T: Into<String>>(
+        mut self,
+        name: T,
+        precision: u8,
+        scale: i8,
+    ) -> Self {
+        self.columns.push(Column {
+            name: name.into(),
+            data_type: ColumnDataType::Decimal128,
+            semantic_type: SemanticType::Field,
+            data_type_extension: Some(DataTypeExtension::Decimal128 { precision, scale }),
+        });
         self
     }
 }
@@ -96,6 +106,8 @@ pub struct Column {
     pub name: String,
     pub data_type: ColumnDataType,
     pub semantic_type: SemanticType,
+    /// Extended type information for data types that need additional parameters
+    pub data_type_extension: Option<DataTypeExtension>,
 }
 
 /// Represents a data row with type-safe value access
@@ -226,7 +238,7 @@ impl Row {
     }
 
     /// Get decimal128 value at index
-    pub fn get_decimal128(&self, index: usize) -> Option<Vec<u8>> {
+    pub fn get_decimal128(&self, index: usize) -> Option<i128> {
         self.values.get(index)?.as_decimal128()
     }
 }
@@ -272,8 +284,8 @@ pub enum Value {
     TimeMicrosecond(i64),
     TimeNanosecond(i64),
 
-    // Decimal type (stored as binary for precision)
-    Decimal128(Vec<u8>),
+    // Decimal type (precision and scale are stored in the column schema)
+    Decimal128(i128),
 
     // JSON type (stored as string)
     Json(String),
@@ -479,9 +491,9 @@ impl Value {
     }
 
     // Decimal accessor
-    pub fn as_decimal128(&self) -> Option<Vec<u8>> {
+    pub fn as_decimal128(&self) -> Option<i128> {
         match self {
-            Value::Decimal128(v) => Some(v.clone()),
+            Value::Decimal128(v) => Some(*v),
             _ => None,
         }
     }

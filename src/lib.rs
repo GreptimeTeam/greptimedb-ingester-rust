@@ -38,7 +38,7 @@ pub use arrow_array;
 pub use arrow_schema;
 
 // Re-export table module components for easier access
-pub use self::table::{Column, Row, Table, TableBuilder, Value};
+pub use self::table::{Column, DataTypeExtension, Row, TableSchema, TableSchemaBuilder, Value};
 
 // Re-export API types for direct access
 pub use self::api::v1::{ColumnDataType, SemanticType};

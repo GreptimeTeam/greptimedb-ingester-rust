@@ -21,7 +21,7 @@ use greptimedb_ingester::helpers::schema::*;
 use greptimedb_ingester::helpers::values::*;
 use greptimedb_ingester::{
     database::Database, BulkInserter, BulkWriteOptions, ColumnDataType, Result, Rows as BulkRows,
-    Table,
+    TableSchema,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -156,7 +156,7 @@ async fn test_bulk_stream_writer_sequential() -> Result<()> {
     let bulk_inserter = BulkInserter::new(client, &config.database);
 
     // Create table template (must match the schema above exactly)
-    let table_template = Table::builder()
+    let table_template = TableSchema::builder()
         .name(&table_name)
         .build()
         .unwrap()
@@ -241,7 +241,7 @@ async fn test_bulk_stream_writer_parallel() -> Result<()> {
     // Now use bulk API for parallel operations
     let bulk_inserter = BulkInserter::new(client, &config.database);
 
-    let table_template = Table::builder()
+    let table_template = TableSchema::builder()
         .name(&table_name)
         .build()
         .unwrap()

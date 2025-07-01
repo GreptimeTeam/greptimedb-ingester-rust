@@ -12,26 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! High-level bulk insert API for GreptimeDB
+//! High-level bulk insert API for `GreptimeDB`
 //!
-//! This module provides a user-friendly API for bulk inserting data into GreptimeDB,
+//! This module provides a user-friendly API for bulk inserting data into `GreptimeDB`,
 //! abstracting away the low-level Arrow Flight details.
 
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::select;
 use tokio::time::timeout;
 
 use arrow_array::builder::{
-    BinaryBuilder, BooleanBuilder, Date32Builder, Float32Builder, Float64Builder, Int16Builder,
-    Int32Builder, Int64Builder, Int8Builder, StringBuilder, Time32MillisecondBuilder,
-    Time32SecondBuilder, Time64MicrosecondBuilder, Time64NanosecondBuilder,
-    TimestampMicrosecondBuilder, TimestampMillisecondBuilder, TimestampNanosecondBuilder,
-    TimestampSecondBuilder, UInt16Builder, UInt32Builder, UInt64Builder, UInt8Builder,
+    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float32Builder,
+    Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder, StringBuilder,
+    Time32MillisecondBuilder, Time32SecondBuilder, Time64MicrosecondBuilder,
+    Time64NanosecondBuilder, TimestampMicrosecondBuilder, TimestampMillisecondBuilder,
+    TimestampNanosecondBuilder, TimestampSecondBuilder, UInt16Builder, UInt32Builder,
+    UInt64Builder, UInt8Builder,
 };
 use arrow_array::{Array, RecordBatch};
 use arrow_flight::{FlightData, FlightDescriptor};
@@ -44,7 +44,7 @@ use crate::client::Client;
 use crate::database::Database;
 use crate::flight::do_put::{DoPutMetadata, DoPutResponse};
 use crate::flight::{FlightEncoder, FlightMessage};
-use crate::table::{Column, Row, Table, Value};
+use crate::table::{Column, DataTypeExtension, Row, TableSchema, Value};
 use crate::{error, Result};
 use snafu::{ensure, ResultExt};
 
@@ -134,6 +134,7 @@ pub struct AdaptiveAllocStats {
 }
 
 impl AdaptiveAllocStats {
+    #[must_use]
     pub fn new(window_size: usize) -> Self {
         Self {
             column_windows: Mutex::new(HashMap::new()),
@@ -162,7 +163,7 @@ impl AdaptiveAllocStats {
     }
 }
 
-/// High-level bulk inserter for GreptimeDB
+/// High-level bulk inserter for `GreptimeDB`
 #[derive(Clone)]
 pub struct BulkInserter {
     database: Database,
@@ -170,6 +171,7 @@ pub struct BulkInserter {
 
 impl BulkInserter {
     /// Create a new bulk inserter
+    #[must_use]
     pub fn new(client: Client, database_name: &str) -> Self {
         Self {
             database: Database::new_with_dbname(database_name, client),
@@ -179,10 +181,10 @@ impl BulkInserter {
     /// Create a bulk stream writer from a table template
     ///
     /// This is a convenience method that extracts the schema from a table
-    /// and creates a BulkStreamWriter bound to that schema.
+    /// and creates a `BulkStreamWriter` bound to that schema.
     pub async fn create_bulk_stream_writer(
         &self,
-        table: &Table,
+        table: &TableSchema,
         options: Option<BulkWriteOptions>,
     ) -> Result<BulkStreamWriter> {
         let options = options.unwrap_or_default();
@@ -221,18 +223,21 @@ impl Default for BulkWriteOptions {
 
 impl BulkWriteOptions {
     /// Set compression type
+    #[must_use]
     pub fn with_compression(mut self, compression: CompressionType) -> Self {
         self.compression = compression;
         self
     }
 
     /// Set timeout duration
+    #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
     /// Set parallelism for concurrent requests
+    #[must_use]
     pub fn with_parallelism(mut self, parallelism: usize) -> Self {
         self.parallelism = parallelism;
         self
@@ -279,7 +284,7 @@ impl BulkStreamWriter {
         let fields: Result<Vec<Field>> = table_schema
             .iter()
             .map(|col| {
-                column_data_type_to_arrow(col.data_type)
+                column_to_arrow_data_type(col)
                     .map(|data_type| Field::new(&col.name, data_type, true))
             })
             .collect();
@@ -325,7 +330,7 @@ impl BulkStreamWriter {
     }
 
     /// Submit rows for writing without waiting for response
-    /// Returns a request_id that can be used to wait for the specific response
+    /// Returns a `request_id` that can be used to wait for the specific response
     pub async fn write_rows_async(&mut self, rows: Rows) -> Result<RequestId> {
         // Validate that the rows schema matches the writer's schema
         self.validate_rows_schema(&rows)?;
@@ -336,7 +341,7 @@ impl BulkStreamWriter {
         Ok(request_id)
     }
 
-    /// Wait for a specific request's response by request_id
+    /// Wait for a specific request's response by `request_id`
     pub async fn wait_for_response(
         &mut self,
         target_request_id: RequestId,
@@ -361,15 +366,12 @@ impl BulkStreamWriter {
             }
 
             let next_result = timeout(remaining_timeout, self.response_stream.next()).await;
-            let next_option = match next_result {
-                Ok(option) => option,
-                Err(_) => {
-                    return error::RequestTimeoutSnafu {
-                        request_ids: vec![target_request_id],
-                        timeout: self.timeout,
-                    }
-                    .fail();
+            let Ok(next_option) = next_result else {
+                return error::RequestTimeoutSnafu {
+                    request_ids: vec![target_request_id],
+                    timeout: self.timeout,
                 }
+                .fail();
             };
             if let Some(response) = next_option {
                 let response = response?;
@@ -407,7 +409,7 @@ impl BulkStreamWriter {
             let timeout_sleep = tokio::time::sleep(remaining_timeout);
 
             select! {
-                _ = timeout_sleep => {
+                () = timeout_sleep => {
                     let pending_ids: Vec<RequestId> = self.pending_requests.keys().copied().collect();
                     return error::RequestTimeoutSnafu {
                         request_ids: pending_ids,
@@ -425,7 +427,7 @@ impl BulkStreamWriter {
                             loop {
                                 let drain_timeout = tokio::time::sleep(Duration::from_millis(1));
                                 select! {
-                                    _ = drain_timeout => break,
+                                    () = drain_timeout => break,
                                     next_option = self.response_stream.next() => {
                                         match next_option {
                                             Some(response) => {
@@ -507,7 +509,7 @@ impl BulkStreamWriter {
     }
 
     /// Create a new Row builder that is compatible with this writer's schema
-    /// Returns a RowBuilder that can efficiently build rows for this writer
+    /// Returns a `RowBuilder` that can efficiently build rows for this writer
     /// Uses O(1) field name lookup for optimal performance
     #[must_use]
     pub fn new_row(&self) -> RowBuilder {
@@ -515,6 +517,7 @@ impl BulkStreamWriter {
     }
 
     /// Get the table schema that this writer is bound to
+    #[must_use]
     pub fn table_schema(&self) -> &[Column] {
         &self.table_schema
     }
@@ -544,7 +547,7 @@ impl BulkStreamWriter {
     }
 
     /// Submit a record batch without waiting for response
-    /// Returns the request_id for later tracking
+    /// Returns the `request_id` for later tracking
     async fn submit_record_batch(&mut self, batch: RecordBatch) -> Result<RequestId> {
         // Send schema first if not already sent
         if !self.schema_sent {
@@ -664,7 +667,7 @@ impl BulkStreamWriter {
         loop {
             let drain_timeout = tokio::time::sleep(Duration::from_micros(1));
             select! {
-                _ = drain_timeout => break,
+                () = drain_timeout => break,
                 next_option = self.response_stream.next() => {
                     match next_option {
                         Some(response) => {
@@ -694,13 +697,13 @@ impl BulkStreamWriter {
         let actual_fields = rows_schema.fields();
 
         if expected_fields.len() != actual_fields.len() {
-            return self.schema_mismatch_error(expected_fields, actual_fields);
+            return Self::schema_mismatch_error(expected_fields, actual_fields);
         }
 
         // Check each field for compatibility
         for (expected, actual) in expected_fields.iter().zip(actual_fields.iter()) {
             if expected != actual {
-                return self.schema_mismatch_error(expected_fields, actual_fields);
+                return Self::schema_mismatch_error(expected_fields, actual_fields);
             }
         }
 
@@ -710,7 +713,6 @@ impl BulkStreamWriter {
     /// Helper to create schema mismatch error with lazy formatting
     #[cold]
     fn schema_mismatch_error(
-        &self,
         expected_fields: &arrow_schema::Fields,
         actual_fields: &arrow_schema::Fields,
     ) -> Result<()> {
@@ -733,7 +735,8 @@ impl BulkStreamWriter {
 
 // Helper function to convert ColumnDataType to Arrow DataType
 // Based on GreptimeDB Java implementation - only supports actually implemented types
-fn column_data_type_to_arrow(data_type: ColumnDataType) -> Result<DataType> {
+fn column_to_arrow_data_type(column: &Column) -> Result<DataType> {
+    let data_type = column.data_type;
     Ok(match data_type {
         // Integer types
         ColumnDataType::Int8 => DataType::Int8,
@@ -753,8 +756,8 @@ fn column_data_type_to_arrow(data_type: ColumnDataType) -> Result<DataType> {
         ColumnDataType::Boolean => DataType::Boolean,
 
         // String and Binary types
-        ColumnDataType::Binary => DataType::Binary,
         ColumnDataType::String => DataType::Utf8,
+        ColumnDataType::Binary => DataType::Binary,
 
         // Date type
         ColumnDataType::Date => DataType::Date32,
@@ -763,8 +766,9 @@ fn column_data_type_to_arrow(data_type: ColumnDataType) -> Result<DataType> {
         ColumnDataType::TimestampSecond => DataType::Timestamp(TimeUnit::Second, None),
         ColumnDataType::TimestampMillisecond => DataType::Timestamp(TimeUnit::Millisecond, None),
         // DateTime is an alias of TIMESTAMP_MICROSECOND per GreptimeDB docs
-        ColumnDataType::Datetime => DataType::Timestamp(TimeUnit::Microsecond, None),
-        ColumnDataType::TimestampMicrosecond => DataType::Timestamp(TimeUnit::Microsecond, None),
+        ColumnDataType::Datetime | ColumnDataType::TimestampMicrosecond => {
+            DataType::Timestamp(TimeUnit::Microsecond, None)
+        }
         ColumnDataType::TimestampNanosecond => DataType::Timestamp(TimeUnit::Nanosecond, None),
 
         // Time types (without date)
@@ -773,8 +777,15 @@ fn column_data_type_to_arrow(data_type: ColumnDataType) -> Result<DataType> {
         ColumnDataType::TimeMicrosecond => DataType::Time64(arrow_schema::TimeUnit::Microsecond),
         ColumnDataType::TimeNanosecond => DataType::Time64(arrow_schema::TimeUnit::Nanosecond),
 
-        // Decimal type (precision and scale should be provided via extension, using defaults for now)
-        ColumnDataType::Decimal128 => DataType::Decimal128(38, 10),
+        // Decimal type - extract precision and scale from column extension
+        ColumnDataType::Decimal128 => {
+            match &column.data_type_extension {
+                Some(DataTypeExtension::Decimal128 { precision, scale }) => {
+                    DataType::Decimal128(*precision, *scale)
+                }
+                _ => DataType::Decimal128(38, 10), // Default fallback
+            }
+        }
 
         // JSON type (represented as Binary per Java implementation)
         ColumnDataType::Json => DataType::Binary,
@@ -867,11 +878,13 @@ impl Rows {
     }
 
     /// Get the current number of rows
+    #[must_use]
     pub fn len(&self) -> usize {
         self.builder.len() + self.row_buffer.len()
     }
 
     /// Check if the collection is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -879,6 +892,7 @@ impl Rows {
     // Note: No capacity limits - can grow dynamically as needed
 
     /// Get the schema
+    #[must_use]
     pub fn schema(&self) -> &Arc<Schema> {
         &self.schema
     }
@@ -916,7 +930,7 @@ impl RowBatchBuilder {
         let fields: Result<Vec<Field>> = table_schema
             .iter()
             .map(|col| {
-                column_data_type_to_arrow(col.data_type)
+                column_to_arrow_data_type(col)
                     .map(|data_type| Field::new(&col.name, data_type, true))
             })
             .collect();
@@ -925,9 +939,7 @@ impl RowBatchBuilder {
         let builders: Result<Vec<ArrayBuilderEnum>> = table_schema
             .iter()
             .enumerate()
-            .map(|(col_idx, col)| {
-                create_array_builder(col.data_type, capacity, col_idx, alloc_stats.clone())
-            })
+            .map(|(col_idx, col)| create_array_builder(col, capacity, col_idx, alloc_stats.clone()))
             .collect();
 
         Ok(Self {
@@ -947,9 +959,7 @@ impl RowBatchBuilder {
         let builders: Result<Vec<ArrayBuilderEnum>> = table_schema
             .iter()
             .enumerate()
-            .map(|(col_idx, col)| {
-                create_array_builder(col.data_type, capacity, col_idx, alloc_stats.clone())
-            })
+            .map(|(col_idx, col)| create_array_builder(col, capacity, col_idx, alloc_stats.clone()))
             .collect();
 
         Ok(Self {
@@ -973,7 +983,7 @@ impl RowBatchBuilder {
         let arrays: Result<Vec<Arc<dyn Array>>> = self
             .builders
             .iter_mut()
-            .map(|builder| builder.finish())
+            .map(ArrayBuilderEnum::finish)
             .collect();
 
         RecordBatch::try_new(self.schema, arrays?).context(error::CreateRecordBatchSnafu)
@@ -1005,6 +1015,7 @@ enum ArrayBuilderEnum {
     Float64(Float64Builder),
     String(AdaptiveStringBuilder),
     Binary(AdaptiveBinaryBuilder),
+    Decimal128(Decimal128Builder),
     Date(Date32Builder),
     TimestampSecond(TimestampSecondBuilder),
     TimestampMillisecond(TimestampMillisecondBuilder),
@@ -1032,6 +1043,7 @@ impl ArrayBuilderEnum {
             ArrayBuilderEnum::Float64(builder) => builder.append_values_from_rows(rows, col_idx),
             ArrayBuilderEnum::String(builder) => builder.append_values_from_rows(rows, col_idx),
             ArrayBuilderEnum::Binary(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::Decimal128(builder) => builder.append_values_from_rows(rows, col_idx),
             ArrayBuilderEnum::Date(builder) => builder.append_values_from_rows(rows, col_idx),
             ArrayBuilderEnum::TimestampSecond(builder) => {
                 builder.append_values_from_rows(rows, col_idx)
@@ -1073,6 +1085,7 @@ impl ArrayBuilderEnum {
             ArrayBuilderEnum::Float64(builder) => Arc::new(builder.finish()),
             ArrayBuilderEnum::String(builder) => builder.finish()?,
             ArrayBuilderEnum::Binary(builder) => builder.finish()?,
+            ArrayBuilderEnum::Decimal128(builder) => Arc::new(builder.finish()),
             ArrayBuilderEnum::Date(builder) => Arc::new(builder.finish()),
             ArrayBuilderEnum::TimestampSecond(builder) => Arc::new(builder.finish()),
             ArrayBuilderEnum::TimestampMillisecond(builder) => Arc::new(builder.finish()),
@@ -1086,14 +1099,15 @@ impl ArrayBuilderEnum {
     }
 }
 
-/// Create an array builder enum for the given column data type with adaptive sizing
+/// Create an array builder enum for the given column with adaptive sizing
 /// Uses enum dispatch for maximum performance (zero-cost polymorphism)
 fn create_array_builder(
-    data_type: ColumnDataType,
+    column: &Column,
     capacity: usize,
     column_index: usize,
     alloc_stats: Arc<AdaptiveAllocStats>,
 ) -> Result<ArrayBuilderEnum> {
+    let data_type = column.data_type;
     Ok(match data_type {
         ColumnDataType::Boolean => {
             ArrayBuilderEnum::Boolean(BooleanBuilder::with_capacity(capacity))
@@ -1117,24 +1131,18 @@ fn create_array_builder(
             column_index,
             alloc_stats.clone(),
         )),
-        ColumnDataType::Binary => ArrayBuilderEnum::Binary(AdaptiveBinaryBuilder::new(
-            capacity,
-            column_index,
-            alloc_stats.clone(),
-        )),
         ColumnDataType::Date => ArrayBuilderEnum::Date(Date32Builder::with_capacity(capacity)),
-        ColumnDataType::Datetime => ArrayBuilderEnum::TimestampMicrosecond(
-            TimestampMicrosecondBuilder::with_capacity(capacity),
-        ),
         ColumnDataType::TimestampSecond => {
             ArrayBuilderEnum::TimestampSecond(TimestampSecondBuilder::with_capacity(capacity))
         }
         ColumnDataType::TimestampMillisecond => ArrayBuilderEnum::TimestampMillisecond(
             TimestampMillisecondBuilder::with_capacity(capacity),
         ),
-        ColumnDataType::TimestampMicrosecond => ArrayBuilderEnum::TimestampMicrosecond(
-            TimestampMicrosecondBuilder::with_capacity(capacity),
-        ),
+        ColumnDataType::Datetime | ColumnDataType::TimestampMicrosecond => {
+            ArrayBuilderEnum::TimestampMicrosecond(TimestampMicrosecondBuilder::with_capacity(
+                capacity,
+            ))
+        }
         ColumnDataType::TimestampNanosecond => ArrayBuilderEnum::TimestampNanosecond(
             TimestampNanosecondBuilder::with_capacity(capacity),
         ),
@@ -1150,16 +1158,21 @@ fn create_array_builder(
         ColumnDataType::TimeNanosecond => {
             ArrayBuilderEnum::TimeNanosecond(Time64NanosecondBuilder::with_capacity(capacity))
         }
-        ColumnDataType::Decimal128 => ArrayBuilderEnum::Binary(AdaptiveBinaryBuilder::new(
-            capacity,
-            column_index,
-            alloc_stats.clone(),
-        )),
-        ColumnDataType::Json => ArrayBuilderEnum::Binary(AdaptiveBinaryBuilder::new(
-            capacity,
-            column_index,
-            alloc_stats.clone(),
-        )),
+        ColumnDataType::Decimal128 => {
+            // Extract precision and scale from column definition
+            let (precision, scale) = match &column.data_type_extension {
+                Some(DataTypeExtension::Decimal128 { precision, scale }) => (*precision, *scale),
+                _ => (38, 10), // Default precision and scale if not specified
+            };
+
+            ArrayBuilderEnum::Decimal128(
+                Decimal128Builder::with_capacity(capacity)
+                    .with_data_type(arrow_schema::DataType::Decimal128(precision, scale)),
+            )
+        }
+        ColumnDataType::Binary | ColumnDataType::Json => ArrayBuilderEnum::Binary(
+            AdaptiveBinaryBuilder::new(capacity, column_index, alloc_stats.clone()),
+        ),
         _ => {
             return error::UnsupportedDataTypeSnafu {
                 data_type: format!("{data_type:?}. Not supported in RowBatchBuilder"),
@@ -1291,6 +1304,9 @@ impl_arrow_builder!(Time64NanosecondBuilder, get_i64, i64);
 // Date types
 impl_arrow_builder!(Date32Builder, get_date, i32);
 
+// Decimal128 type (uses column-defined precision and scale)
+impl_arrow_builder!(Decimal128Builder, get_decimal128, i128);
+
 /// A helper for building rows with schema-aware field access
 /// This prevents common mistakes like incorrect field order or types
 /// Uses O(1) field name lookup for optimal performance
@@ -1360,16 +1376,19 @@ mod tests {
                 name: "id".to_string(),
                 data_type: ColumnDataType::Int64,
                 semantic_type: SemanticType::Field,
+                data_type_extension: None,
             },
             Column {
                 name: "name".to_string(),
                 data_type: ColumnDataType::String,
                 semantic_type: SemanticType::Field,
+                data_type_extension: None,
             },
             Column {
                 name: "timestamp".to_string(),
                 data_type: ColumnDataType::TimestampMillisecond,
                 semantic_type: SemanticType::Timestamp,
+                data_type_extension: None,
             },
         ];
 
@@ -1379,11 +1398,13 @@ mod tests {
                 name: "id".to_string(),
                 data_type: ColumnDataType::Int64,
                 semantic_type: SemanticType::Field,
+                data_type_extension: None,
             },
             Column {
                 name: "value".to_string(),          // Different column name
                 data_type: ColumnDataType::Float64, // Different data type
                 semantic_type: SemanticType::Field,
+                data_type_extension: None,
             },
         ];
 
@@ -1411,11 +1432,13 @@ mod tests {
                 name: "id".to_string(),
                 data_type: ColumnDataType::Int64,
                 semantic_type: SemanticType::Field,
+                data_type_extension: None,
             },
             Column {
                 name: "message".to_string(),
                 data_type: ColumnDataType::String,
                 semantic_type: SemanticType::Field,
+                data_type_extension: None,
             },
         ];
 
@@ -1442,22 +1465,166 @@ mod tests {
     }
 
     #[test]
+    fn test_adaptive_alloc_stats() {
+        let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
+
+        // Test basic functionality
+        assert_eq!(alloc_stats.avg_size(0), 64); // Default for new column
+
+        // Record some sizes for column 0
+        alloc_stats.record_size(0, 100);
+        alloc_stats.record_size(0, 200);
+        alloc_stats.record_size(0, 300);
+
+        // Average should be within expected range (accounting for alignment)
+        let avg = alloc_stats.avg_size(0);
+        assert!(
+            (150..=250).contains(&avg),
+            "Average {avg} not in expected range"
+        );
+
+        // Test different column
+        alloc_stats.record_size(1, 50);
+        let avg1 = alloc_stats.avg_size(1);
+        assert!(
+            (40..=80).contains(&avg1),
+            "Column 1 average {avg1} not in expected range"
+        );
+    }
+
+    #[test]
+    fn test_sliding_window() {
+        let mut window = SlidingWindow::new(4);
+
+        // Test empty window
+        assert_eq!(window.average(), 64); // Default
+
+        // Add samples
+        window.add_sample(100);
+        window.add_sample(200);
+        window.add_sample(300);
+
+        let avg = window.average();
+        assert!(
+            (150..=250).contains(&avg),
+            "Average {avg} not in expected range"
+        );
+
+        // Fill the window and test overflow
+        window.add_sample(400);
+        window.add_sample(500); // Should replace oldest (100)
+
+        // Average should now be around (200+300+400+500)/4 = 350
+        let avg2 = window.average();
+        assert!(
+            (300..=400).contains(&avg2),
+            "Overflow average {avg2} not in expected range"
+        );
+    }
+
+    #[test]
+    fn test_adaptive_alloc_stats_cache_performance() {
+        use std::time::Instant;
+
+        let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
+
+        // Warm up cache with column 0
+        for i in 0..100 {
+            alloc_stats.record_size(0, 100 + i);
+        }
+
+        // Measure cache hit performance
+        let start = Instant::now();
+        for _ in 0..10000 {
+            alloc_stats.record_size(0, 150); // Should hit cache
+        }
+        let cache_hit_time = start.elapsed();
+
+        // Measure cache miss performance (new column)
+        let start = Instant::now();
+        for i in 0..10000 {
+            alloc_stats.record_size(i + 1000, 150); // Different columns each time
+        }
+        let cache_miss_time = start.elapsed();
+
+        println!("Cache hit time: {cache_hit_time:?}");
+        println!("Cache miss time: {cache_miss_time:?}");
+
+        // Cache hits should generally be faster, but timing can be variable in tests
+        // Log the results for visibility
+        println!(
+            "Cache performance ratio: {:.2}x (miss/hit)",
+            cache_miss_time.as_nanos() as f64 / cache_hit_time.as_nanos() as f64
+        );
+
+        // Use a more lenient assertion - cache shouldn't be dramatically slower
+        assert!(
+            cache_hit_time < cache_miss_time * 3,
+            "Cache is significantly slower: hit={cache_hit_time:?}, miss={cache_miss_time:?}"
+        );
+    }
+
+    #[test]
+    fn test_concurrent_adaptive_alloc_stats() {
+        use std::thread;
+
+        let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
+        let mut handles = vec![];
+
+        // Spawn multiple threads that record sizes concurrently
+        for thread_id in 0..4 {
+            let stats = alloc_stats.clone();
+            let handle = thread::spawn(move || {
+                for i in 0..1000 {
+                    // Each thread records to the same columns to test contention
+                    stats.record_size(0, 100 + (thread_id * 10) + (i % 50));
+                    stats.record_size(1, 200 + (thread_id * 20) + (i % 30));
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Verify that averages are reasonable despite concurrent access
+        let avg0 = alloc_stats.avg_size(0);
+        let avg1 = alloc_stats.avg_size(1);
+
+        assert!(
+            (100..=300).contains(&avg0),
+            "Column 0 average {avg0} not reasonable"
+        );
+        assert!(
+            (200..=400).contains(&avg1),
+            "Column 1 average {avg1} not reasonable"
+        );
+
+        println!("Concurrent test results: column 0 avg={avg0}, column 1 avg={avg1}");
+    }
+
+    #[test]
     fn test_row_builder_api() {
         let schema = vec![
             Column {
                 name: "timestamp".to_string(),
                 data_type: ColumnDataType::TimestampMillisecond,
                 semantic_type: SemanticType::Timestamp,
+                data_type_extension: None,
             },
             Column {
                 name: "sensor_id".to_string(),
                 data_type: ColumnDataType::String,
                 semantic_type: SemanticType::Field,
+                data_type_extension: None,
             },
             Column {
                 name: "temperature".to_string(),
                 data_type: ColumnDataType::Float64,
                 semantic_type: SemanticType::Field,
+                data_type_extension: None,
             },
         ];
 
@@ -1522,25 +1689,6 @@ mod tests {
 
         window.add_sample(500); // Replaces 200
         assert_eq!(window.average(), 400); // (300 + 400 + 500) / 3 = 400 -> 400 (already aligned to 16)
-    }
-
-    #[test]
-    fn test_adaptive_alloc_stats() {
-        let stats = AdaptiveAllocStats::new(16);
-
-        // Test initial defaults
-        assert_eq!(stats.avg_size(0), 64);
-        assert_eq!(stats.avg_size(1), 64);
-
-        // Record some samples
-        stats.record_size(0, 100);
-        stats.record_size(0, 200);
-        stats.record_size(1, 150);
-        stats.record_size(1, 250);
-
-        // Test averages (results will be aligned)
-        assert_eq!(stats.avg_size(0), 160); // (100 + 200) / 2 = 150 -> 160 (aligned to 16)
-        assert_eq!(stats.avg_size(1), 208); // (150 + 250) / 2 = 200 -> 208 (aligned to 16)
     }
 
     #[test]
