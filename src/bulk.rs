@@ -901,7 +901,7 @@ impl TryFrom<Rows> for RecordBatch {
 /// This avoids the overhead of creating intermediate Row objects and converting them
 /// Arrow builders automatically manage capacity and expand as needed
 pub struct RowBatchBuilder {
-    builders: Vec<Box<dyn ArrayBuilder>>,
+    builders: Vec<ArrayBuilderEnum>,
     schema: Arc<Schema>,
     current_rows: usize,
 }
@@ -922,16 +922,11 @@ impl RowBatchBuilder {
             .collect();
         let schema = Arc::new(Schema::new(fields?));
 
-        let builders: Result<Vec<Box<dyn ArrayBuilder>>> = table_schema
+        let builders: Result<Vec<ArrayBuilderEnum>> = table_schema
             .iter()
             .enumerate()
-            .map(|(column_index, col)| {
-                create_array_builder_adaptive(
-                    col.data_type,
-                    capacity,
-                    column_index,
-                    alloc_stats.clone(),
-                )
+            .map(|(col_idx, col)| {
+                create_array_builder(col.data_type, capacity, col_idx, alloc_stats.clone())
             })
             .collect();
 
@@ -949,16 +944,11 @@ impl RowBatchBuilder {
         capacity: usize,
         alloc_stats: Arc<AdaptiveAllocStats>,
     ) -> Result<Self> {
-        let builders: Result<Vec<Box<dyn ArrayBuilder>>> = table_schema
+        let builders: Result<Vec<ArrayBuilderEnum>> = table_schema
             .iter()
             .enumerate()
-            .map(|(column_index, col)| {
-                create_array_builder_adaptive(
-                    col.data_type,
-                    capacity,
-                    column_index,
-                    alloc_stats.clone(),
-                )
+            .map(|(col_idx, col)| {
+                create_array_builder(col.data_type, capacity, col_idx, alloc_stats.clone())
             })
             .collect();
 
@@ -986,10 +976,7 @@ impl RowBatchBuilder {
             .map(|builder| builder.finish())
             .collect();
 
-        let batch =
-            RecordBatch::try_new(self.schema, arrays?).context(error::CreateRecordBatchSnafu)?;
-
-        Ok(batch)
+        RecordBatch::try_new(self.schema, arrays?).context(error::CreateRecordBatchSnafu)
     }
 
     /// Get the current number of rows in the builder
@@ -1004,109 +991,171 @@ trait ArrayBuilder {
     fn finish(&mut self) -> Result<Arc<dyn Array>>;
 }
 
-/// Create an array builder for the given column data type with adaptive sizing
-fn create_array_builder_adaptive(
+enum ArrayBuilderEnum {
+    Boolean(BooleanBuilder),
+    Int8(Int8Builder),
+    Int16(Int16Builder),
+    Int32(Int32Builder),
+    Int64(Int64Builder),
+    UInt8(UInt8Builder),
+    UInt16(UInt16Builder),
+    UInt32(UInt32Builder),
+    UInt64(UInt64Builder),
+    Float32(Float32Builder),
+    Float64(Float64Builder),
+    String(AdaptiveStringBuilder),
+    Binary(AdaptiveBinaryBuilder),
+    Date(Date32Builder),
+    TimestampSecond(TimestampSecondBuilder),
+    TimestampMillisecond(TimestampMillisecondBuilder),
+    TimestampMicrosecond(TimestampMicrosecondBuilder),
+    TimestampNanosecond(TimestampNanosecondBuilder),
+    TimeSecond(Time32SecondBuilder),
+    TimeMillisecond(Time32MillisecondBuilder),
+    TimeMicrosecond(Time64MicrosecondBuilder),
+    TimeNanosecond(Time64NanosecondBuilder),
+}
+
+impl ArrayBuilderEnum {
+    fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
+        match self {
+            ArrayBuilderEnum::Boolean(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::Int8(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::Int16(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::Int32(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::Int64(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::UInt8(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::UInt16(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::UInt32(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::UInt64(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::Float32(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::Float64(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::String(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::Binary(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::Date(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::TimestampSecond(builder) => {
+                builder.append_values_from_rows(rows, col_idx)
+            }
+            ArrayBuilderEnum::TimestampMillisecond(builder) => {
+                builder.append_values_from_rows(rows, col_idx)
+            }
+            ArrayBuilderEnum::TimestampMicrosecond(builder) => {
+                builder.append_values_from_rows(rows, col_idx)
+            }
+            ArrayBuilderEnum::TimestampNanosecond(builder) => {
+                builder.append_values_from_rows(rows, col_idx)
+            }
+            ArrayBuilderEnum::TimeSecond(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::TimeMillisecond(builder) => {
+                builder.append_values_from_rows(rows, col_idx)
+            }
+            ArrayBuilderEnum::TimeMicrosecond(builder) => {
+                builder.append_values_from_rows(rows, col_idx)
+            }
+            ArrayBuilderEnum::TimeNanosecond(builder) => {
+                builder.append_values_from_rows(rows, col_idx)
+            }
+        }
+    }
+
+    fn finish(&mut self) -> Result<Arc<dyn Array>> {
+        Ok(match self {
+            ArrayBuilderEnum::Boolean(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::Int8(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::Int16(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::Int32(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::Int64(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::UInt8(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::UInt16(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::UInt32(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::UInt64(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::Float32(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::Float64(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::String(builder) => builder.finish()?,
+            ArrayBuilderEnum::Binary(builder) => builder.finish()?,
+            ArrayBuilderEnum::Date(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::TimestampSecond(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::TimestampMillisecond(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::TimestampMicrosecond(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::TimestampNanosecond(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::TimeSecond(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::TimeMillisecond(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::TimeMicrosecond(builder) => Arc::new(builder.finish()),
+            ArrayBuilderEnum::TimeNanosecond(builder) => Arc::new(builder.finish()),
+        })
+    }
+}
+
+/// Create an array builder enum for the given column data type with adaptive sizing
+/// Uses enum dispatch for maximum performance (zero-cost polymorphism)
+fn create_array_builder(
     data_type: ColumnDataType,
     capacity: usize,
     column_index: usize,
     alloc_stats: Arc<AdaptiveAllocStats>,
-) -> Result<Box<dyn ArrayBuilder>> {
+) -> Result<ArrayBuilderEnum> {
     Ok(match data_type {
-        ColumnDataType::Boolean => Box::new(TypedArrayBuilder::<BooleanBuilder>::new(
-            BooleanBuilder::with_capacity(capacity),
-        )),
-        ColumnDataType::Int8 => Box::new(TypedArrayBuilder::<Int8Builder>::new(
-            Int8Builder::with_capacity(capacity),
-        )),
-        ColumnDataType::Int16 => Box::new(TypedArrayBuilder::<Int16Builder>::new(
-            Int16Builder::with_capacity(capacity),
-        )),
-        ColumnDataType::Int32 => Box::new(TypedArrayBuilder::<Int32Builder>::new(
-            Int32Builder::with_capacity(capacity),
-        )),
-        ColumnDataType::Int64 => Box::new(TypedArrayBuilder::<Int64Builder>::new(
-            Int64Builder::with_capacity(capacity),
-        )),
-        ColumnDataType::Uint8 => Box::new(TypedArrayBuilder::<UInt8Builder>::new(
-            UInt8Builder::with_capacity(capacity),
-        )),
-        ColumnDataType::Uint16 => Box::new(TypedArrayBuilder::<UInt16Builder>::new(
-            UInt16Builder::with_capacity(capacity),
-        )),
-        ColumnDataType::Uint32 => Box::new(TypedArrayBuilder::<UInt32Builder>::new(
-            UInt32Builder::with_capacity(capacity),
-        )),
-        ColumnDataType::Uint64 => Box::new(TypedArrayBuilder::<UInt64Builder>::new(
-            UInt64Builder::with_capacity(capacity),
-        )),
-        ColumnDataType::Float32 => Box::new(TypedArrayBuilder::<Float32Builder>::new(
-            Float32Builder::with_capacity(capacity),
-        )),
-        ColumnDataType::Float64 => Box::new(TypedArrayBuilder::<Float64Builder>::new(
-            Float64Builder::with_capacity(capacity),
-        )),
-        ColumnDataType::String => Box::new(AdaptiveStringBuilder::new(
-            capacity,
-            column_index,
-            alloc_stats.clone(),
-        )),
-        ColumnDataType::Binary => Box::new(AdaptiveBinaryBuilder::new(
-            capacity,
-            column_index,
-            alloc_stats.clone(),
-        )),
-        ColumnDataType::Date => Box::new(TypedArrayBuilder::<Date32Builder>::new(
-            Date32Builder::with_capacity(capacity),
-        )),
-        ColumnDataType::Datetime => {
-            Box::new(TypedArrayBuilder::<TimestampMicrosecondBuilder>::new(
-                TimestampMicrosecondBuilder::with_capacity(capacity),
-            ))
+        ColumnDataType::Boolean => {
+            ArrayBuilderEnum::Boolean(BooleanBuilder::with_capacity(capacity))
         }
+        ColumnDataType::Int8 => ArrayBuilderEnum::Int8(Int8Builder::with_capacity(capacity)),
+        ColumnDataType::Int16 => ArrayBuilderEnum::Int16(Int16Builder::with_capacity(capacity)),
+        ColumnDataType::Int32 => ArrayBuilderEnum::Int32(Int32Builder::with_capacity(capacity)),
+        ColumnDataType::Int64 => ArrayBuilderEnum::Int64(Int64Builder::with_capacity(capacity)),
+        ColumnDataType::Uint8 => ArrayBuilderEnum::UInt8(UInt8Builder::with_capacity(capacity)),
+        ColumnDataType::Uint16 => ArrayBuilderEnum::UInt16(UInt16Builder::with_capacity(capacity)),
+        ColumnDataType::Uint32 => ArrayBuilderEnum::UInt32(UInt32Builder::with_capacity(capacity)),
+        ColumnDataType::Uint64 => ArrayBuilderEnum::UInt64(UInt64Builder::with_capacity(capacity)),
+        ColumnDataType::Float32 => {
+            ArrayBuilderEnum::Float32(Float32Builder::with_capacity(capacity))
+        }
+        ColumnDataType::Float64 => {
+            ArrayBuilderEnum::Float64(Float64Builder::with_capacity(capacity))
+        }
+        ColumnDataType::String => ArrayBuilderEnum::String(AdaptiveStringBuilder::new(
+            capacity,
+            column_index,
+            alloc_stats.clone(),
+        )),
+        ColumnDataType::Binary => ArrayBuilderEnum::Binary(AdaptiveBinaryBuilder::new(
+            capacity,
+            column_index,
+            alloc_stats.clone(),
+        )),
+        ColumnDataType::Date => ArrayBuilderEnum::Date(Date32Builder::with_capacity(capacity)),
+        ColumnDataType::Datetime => ArrayBuilderEnum::TimestampMicrosecond(
+            TimestampMicrosecondBuilder::with_capacity(capacity),
+        ),
         ColumnDataType::TimestampSecond => {
-            Box::new(TypedArrayBuilder::<TimestampSecondBuilder>::new(
-                TimestampSecondBuilder::with_capacity(capacity),
-            ))
+            ArrayBuilderEnum::TimestampSecond(TimestampSecondBuilder::with_capacity(capacity))
         }
-        ColumnDataType::TimestampMillisecond => {
-            Box::new(TypedArrayBuilder::<TimestampMillisecondBuilder>::new(
-                TimestampMillisecondBuilder::with_capacity(capacity),
-            ))
+        ColumnDataType::TimestampMillisecond => ArrayBuilderEnum::TimestampMillisecond(
+            TimestampMillisecondBuilder::with_capacity(capacity),
+        ),
+        ColumnDataType::TimestampMicrosecond => ArrayBuilderEnum::TimestampMicrosecond(
+            TimestampMicrosecondBuilder::with_capacity(capacity),
+        ),
+        ColumnDataType::TimestampNanosecond => ArrayBuilderEnum::TimestampNanosecond(
+            TimestampNanosecondBuilder::with_capacity(capacity),
+        ),
+        ColumnDataType::TimeSecond => {
+            ArrayBuilderEnum::TimeSecond(Time32SecondBuilder::with_capacity(capacity))
         }
-        ColumnDataType::TimestampMicrosecond => {
-            Box::new(TypedArrayBuilder::<TimestampMicrosecondBuilder>::new(
-                TimestampMicrosecondBuilder::with_capacity(capacity),
-            ))
-        }
-        ColumnDataType::TimestampNanosecond => {
-            Box::new(TypedArrayBuilder::<TimestampNanosecondBuilder>::new(
-                TimestampNanosecondBuilder::with_capacity(capacity),
-            ))
-        }
-        ColumnDataType::TimeSecond => Box::new(TypedArrayBuilder::<Time32SecondBuilder>::new(
-            Time32SecondBuilder::with_capacity(capacity),
-        )),
         ColumnDataType::TimeMillisecond => {
-            Box::new(TypedArrayBuilder::<Time32MillisecondBuilder>::new(
-                Time32MillisecondBuilder::with_capacity(capacity),
-            ))
+            ArrayBuilderEnum::TimeMillisecond(Time32MillisecondBuilder::with_capacity(capacity))
         }
         ColumnDataType::TimeMicrosecond => {
-            Box::new(TypedArrayBuilder::<Time64MicrosecondBuilder>::new(
-                Time64MicrosecondBuilder::with_capacity(capacity),
-            ))
+            ArrayBuilderEnum::TimeMicrosecond(Time64MicrosecondBuilder::with_capacity(capacity))
         }
         ColumnDataType::TimeNanosecond => {
-            Box::new(TypedArrayBuilder::<Time64NanosecondBuilder>::new(
-                Time64NanosecondBuilder::with_capacity(capacity),
-            ))
+            ArrayBuilderEnum::TimeNanosecond(Time64NanosecondBuilder::with_capacity(capacity))
         }
-        ColumnDataType::Decimal128 => Box::new(AdaptiveBinaryBuilder::new(
+        ColumnDataType::Decimal128 => ArrayBuilderEnum::Binary(AdaptiveBinaryBuilder::new(
             capacity,
             column_index,
             alloc_stats.clone(),
         )),
-        ColumnDataType::Json => Box::new(AdaptiveBinaryBuilder::new(
+        ColumnDataType::Json => ArrayBuilderEnum::Binary(AdaptiveBinaryBuilder::new(
             capacity,
             column_index,
             alloc_stats.clone(),
@@ -1120,18 +1169,8 @@ fn create_array_builder_adaptive(
     })
 }
 
-/// Generic typed array builder wrapper
-struct TypedArrayBuilder<T> {
-    builder: T,
-}
-
-impl<T> TypedArrayBuilder<T> {
-    fn new(builder: T) -> Self {
-        Self { builder }
-    }
-}
-
 /// Adaptive string array builder that learns from historical data per column
+#[derive(Debug)]
 struct AdaptiveStringBuilder {
     builder: StringBuilder,
     alloc_stats: Arc<AdaptiveAllocStats>,
@@ -1150,6 +1189,7 @@ impl AdaptiveStringBuilder {
 }
 
 /// Adaptive binary array builder that learns from historical data per column
+#[derive(Debug)]
 struct AdaptiveBinaryBuilder {
     builder: BinaryBuilder,
     alloc_stats: Arc<AdaptiveAllocStats>,
@@ -1167,46 +1207,7 @@ impl AdaptiveBinaryBuilder {
     }
 }
 
-// Implementations for common types
-impl ArrayBuilder for TypedArrayBuilder<BooleanBuilder> {
-    fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
-        for row in rows {
-            self.builder.append_option(row.get_bool(col_idx));
-        }
-        Ok(())
-    }
-
-    fn finish(&mut self) -> Result<Arc<dyn Array>> {
-        Ok(Arc::new(self.builder.finish()))
-    }
-}
-
-impl ArrayBuilder for TypedArrayBuilder<Int64Builder> {
-    fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
-        for row in rows {
-            self.builder.append_option(row.get_i64(col_idx));
-        }
-        Ok(())
-    }
-
-    fn finish(&mut self) -> Result<Arc<dyn Array>> {
-        Ok(Arc::new(self.builder.finish()))
-    }
-}
-
-impl ArrayBuilder for TypedArrayBuilder<TimestampMillisecondBuilder> {
-    fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
-        for row in rows {
-            self.builder.append_option(row.get_timestamp(col_idx));
-        }
-        Ok(())
-    }
-
-    fn finish(&mut self) -> Result<Arc<dyn Array>> {
-        Ok(Arc::new(self.builder.finish()))
-    }
-}
-
+/// Adaptive string array builder that learns from historical data per column
 impl ArrayBuilder for AdaptiveStringBuilder {
     fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
         for row in rows {
@@ -1225,6 +1226,7 @@ impl ArrayBuilder for AdaptiveStringBuilder {
     }
 }
 
+/// Adaptive binary array builder that learns from historical data per column
 impl ArrayBuilder for AdaptiveBinaryBuilder {
     fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
         for row in rows {
@@ -1243,47 +1245,51 @@ impl ArrayBuilder for AdaptiveBinaryBuilder {
     }
 }
 
-// Add more implementations for other numeric types...
-macro_rules! impl_numeric_builder {
+// Generate ArrayBuilder implementations for Arrow primitive types
+macro_rules! impl_arrow_builder {
     ($builder_type:ty, $getter:ident, $value_type:ty) => {
-        impl ArrayBuilder for TypedArrayBuilder<$builder_type> {
+        impl ArrayBuilder for $builder_type {
             fn append_values_from_rows(&mut self, rows: &[Row], col_idx: usize) -> Result<()> {
                 for row in rows {
-                    self.builder.append_option(row.$getter(col_idx));
+                    self.append_option(row.$getter(col_idx));
                 }
                 Ok(())
             }
 
             fn finish(&mut self) -> Result<Arc<dyn Array>> {
-                Ok(Arc::new(self.builder.finish()))
+                Ok(Arc::new(self.finish()))
             }
         }
     };
 }
 
-impl_numeric_builder!(Int8Builder, get_i8, i8);
-impl_numeric_builder!(Int16Builder, get_i16, i16);
-impl_numeric_builder!(Int32Builder, get_i32, i32);
-impl_numeric_builder!(UInt8Builder, get_u8, u8);
-impl_numeric_builder!(UInt16Builder, get_u16, u16);
-impl_numeric_builder!(UInt32Builder, get_u32, u32);
-impl_numeric_builder!(UInt64Builder, get_u64, u64);
-impl_numeric_builder!(Float32Builder, get_f32, f32);
-impl_numeric_builder!(Float64Builder, get_f64, f64);
+// Basic primitive types
+impl_arrow_builder!(BooleanBuilder, get_bool, bool);
+impl_arrow_builder!(Int8Builder, get_i8, i8);
+impl_arrow_builder!(Int16Builder, get_i16, i16);
+impl_arrow_builder!(Int32Builder, get_i32, i32);
+impl_arrow_builder!(Int64Builder, get_i64, i64);
+impl_arrow_builder!(UInt8Builder, get_u8, u8);
+impl_arrow_builder!(UInt16Builder, get_u16, u16);
+impl_arrow_builder!(UInt32Builder, get_u32, u32);
+impl_arrow_builder!(UInt64Builder, get_u64, u64);
+impl_arrow_builder!(Float32Builder, get_f32, f32);
+impl_arrow_builder!(Float64Builder, get_f64, f64);
 
-// Timestamp builders
-impl_numeric_builder!(TimestampSecondBuilder, get_timestamp, i64);
-impl_numeric_builder!(TimestampMicrosecondBuilder, get_timestamp, i64);
-impl_numeric_builder!(TimestampNanosecondBuilder, get_timestamp, i64);
+// Timestamp types
+impl_arrow_builder!(TimestampSecondBuilder, get_timestamp, i64);
+impl_arrow_builder!(TimestampMillisecondBuilder, get_timestamp, i64);
+impl_arrow_builder!(TimestampMicrosecondBuilder, get_timestamp, i64);
+impl_arrow_builder!(TimestampNanosecondBuilder, get_timestamp, i64);
 
-// Time builders
-impl_numeric_builder!(Time32SecondBuilder, get_i32, i32);
-impl_numeric_builder!(Time32MillisecondBuilder, get_i32, i32);
-impl_numeric_builder!(Time64MicrosecondBuilder, get_i64, i64);
-impl_numeric_builder!(Time64NanosecondBuilder, get_i64, i64);
+// Time types
+impl_arrow_builder!(Time32SecondBuilder, get_i32, i32);
+impl_arrow_builder!(Time32MillisecondBuilder, get_i32, i32);
+impl_arrow_builder!(Time64MicrosecondBuilder, get_i64, i64);
+impl_arrow_builder!(Time64NanosecondBuilder, get_i64, i64);
 
-// Date builder
-impl_numeric_builder!(Date32Builder, get_date, i32);
+// Date types
+impl_arrow_builder!(Date32Builder, get_date, i32);
 
 /// A helper for building rows with schema-aware field access
 /// This prevents common mistakes like incorrect field order or types
