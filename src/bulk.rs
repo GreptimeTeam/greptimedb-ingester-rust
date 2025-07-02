@@ -19,9 +19,10 @@
 
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use dashmap::DashMap;
 use tokio::select;
 use tokio::time::timeout;
 
@@ -129,7 +130,7 @@ impl SlidingWindow {
 #[derive(Debug)]
 pub struct AdaptiveAllocStats {
     // Per-column tracking: column_index -> sliding window for any variable-length type
-    column_windows: Mutex<HashMap<usize, SlidingWindow>>,
+    column_windows: DashMap<usize, SlidingWindow>,
     window_size: usize,
 }
 
@@ -137,25 +138,24 @@ impl AdaptiveAllocStats {
     #[must_use]
     pub fn new(window_size: usize) -> Self {
         Self {
-            column_windows: Mutex::new(HashMap::new()),
+            column_windows: DashMap::new(),
             window_size,
         }
     }
 
     /// Record variable-length data size for a specific column
     fn record_size(&self, column_index: usize, size: usize) {
-        let mut windows = self.column_windows.lock().unwrap();
-        let window = windows
+        let mut window = self
+            .column_windows
             .entry(column_index)
             .or_insert_with(|| SlidingWindow::new(self.window_size));
-        window.add_sample(size);
+        window.value_mut().add_sample(size);
     }
 
     /// Get average size for a specific column, with default fallback for new columns
     fn avg_size(&self, column_index: usize) -> usize {
-        let windows = self.column_windows.lock().unwrap();
-        if let Some(window) = windows.get(&column_index) {
-            window.average()
+        if let Some(window) = self.column_windows.get(&column_index) {
+            window.value().average()
         } else {
             // Use SlidingWindow default for new columns (64 bytes)
             64
@@ -1237,16 +1237,26 @@ impl AdaptiveBinaryBuilder {
 /// Adaptive string array builder that learns from historical data per column
 impl ArrayBuilder for AdaptiveStringBuilder {
     fn append_values_from_rows(&mut self, rows: &mut [Row], col_idx: usize) -> Result<()> {
+        let mut total_size = 0;
+        let mut not_null_count = 0;
         for row in rows {
             // Use unchecked version for performance - col_idx is guaranteed to be valid by schema
             if let Some(value) = unsafe { row.take_string_unchecked(col_idx) } {
-                // Record the size for future optimization
-                self.alloc_stats.record_size(self.column_index, value.len());
+                total_size += value.len();
+                not_null_count += 1;
+
                 self.builder.append_value(value);
             } else {
                 self.builder.append_null();
             }
         }
+
+        if not_null_count > 0 {
+            // Record the size for future optimization
+            self.alloc_stats
+                .record_size(self.column_index, total_size / not_null_count);
+        }
+
         Ok(())
     }
 
@@ -1258,16 +1268,26 @@ impl ArrayBuilder for AdaptiveStringBuilder {
 /// Adaptive binary array builder that learns from historical data per column
 impl ArrayBuilder for AdaptiveBinaryBuilder {
     fn append_values_from_rows(&mut self, rows: &mut [Row], col_idx: usize) -> Result<()> {
+        let mut total_size = 0;
+        let mut not_null_count = 0;
         for row in rows {
             // Use unchecked version for performance - col_idx is guaranteed to be valid by schema
             if let Some(value) = unsafe { row.take_binary_unchecked(col_idx) } {
-                // Record the size for future optimization
-                self.alloc_stats.record_size(self.column_index, value.len());
+                total_size += value.len();
+                not_null_count += 1;
+
                 self.builder.append_value(value);
             } else {
                 self.builder.append_null();
             }
         }
+
+        if not_null_count > 0 {
+            // Record the size for future optimization
+            self.alloc_stats
+                .record_size(self.column_index, total_size / not_null_count);
+        }
+
         Ok(())
     }
 
@@ -1583,19 +1603,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_concurrent_adaptive_alloc_stats() {
-        use std::thread;
-
+    #[tokio::test]
+    async fn test_concurrent_adaptive_alloc_stats() {
         let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
         let mut handles = vec![];
 
-        // Spawn multiple threads that record sizes concurrently
+        // Spawn multiple tasks that record sizes concurrently
         for thread_id in 0..4 {
             let stats = alloc_stats.clone();
-            let handle = thread::spawn(move || {
+            let handle = tokio::spawn(async move {
                 for i in 0..1000 {
-                    // Each thread records to the same columns to test contention
+                    // Each task records to the same columns to test contention
                     stats.record_size(0, 100 + (thread_id * 10) + (i % 50));
                     stats.record_size(1, 200 + (thread_id * 20) + (i % 30));
                 }
@@ -1603,9 +1621,9 @@ mod tests {
             handles.push(handle);
         }
 
-        // Wait for all threads to complete
+        // Wait for all tasks to complete
         for handle in handles {
-            handle.join().unwrap();
+            handle.await.unwrap();
         }
 
         // Verify that averages are reasonable despite concurrent access
