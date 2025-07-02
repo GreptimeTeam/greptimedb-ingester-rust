@@ -207,9 +207,12 @@ impl BenchmarkRunner {
                 return result.error("Failed to generate rows".to_string());
             };
 
-            let Ok(written) = self.write_rows(&mut bulk_writer, rows).await else {
-                return result.error("Failed to write rows".to_string());
-            };
+            let write_result = self.write_rows(&mut bulk_writer, rows).await;
+            if let Err(e) = write_result {
+                return result.error(format!("Failed to write rows: {e:?}"));
+            }
+
+            let written = write_result.unwrap();
 
             rows_written += written;
             batch_count += 1;
