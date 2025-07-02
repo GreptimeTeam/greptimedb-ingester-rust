@@ -21,13 +21,11 @@ use config_utils::DbConfig;
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use greptimedb_ingester::bulk::AdaptiveAllocStats;
 use greptimedb_ingester::client::Client;
 use greptimedb_ingester::{
     BulkInserter, BulkStreamWriter, BulkWriteOptions, Column, ColumnDataType, CompressionType,
     Result, Row, Rows, TableSchema, Value,
 };
-use std::sync::Arc;
 
 /// Generate test data using the optimized schema-bound buffer API
 /// This method provides the best performance by reusing the writer's cached schema
@@ -112,8 +110,7 @@ fn create_test_rows(
         .unwrap()
         .as_millis() as i64;
 
-    let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
-    let mut rows = Rows::new(column_schemas, rows_per_batch, 1024, alloc_stats)?;
+    let mut rows = Rows::new(column_schemas, rows_per_batch, 1024)?;
     for i in 0..rows_per_batch {
         let global_idx = batch_id * rows_per_batch + i;
         let timestamp = current_time + (global_idx as i64 * 50); // 50ms intervals
