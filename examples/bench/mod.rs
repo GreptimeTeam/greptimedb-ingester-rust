@@ -25,4 +25,3 @@ pub mod table_data_provider;
 pub use benchmark_runner::{compare_benchmark_results, BenchmarkConfig, BenchmarkRunner};
 pub use log_table_data_provider::LogTableDataProvider;
 pub use log_text_helper::LogTextHelper;
-pub use table_data_provider::TableDataProvider;

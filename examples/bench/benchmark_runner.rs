@@ -18,13 +18,8 @@
 //! This module handles benchmark execution, configuration, and results.
 
 use super::table_data_provider::TableDataProvider;
-use greptimedb_ingester::{
-    bulk::AdaptiveAllocStats, BulkInserter, BulkWriteOptions, CompressionType, Result,
-};
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use greptimedb_ingester::{BulkInserter, BulkWriteOptions, CompressionType, Result};
+use std::time::{Duration, Instant};
 
 /// Configuration for benchmark runs
 #[derive(Debug, Clone)]
@@ -52,7 +47,6 @@ impl Default for BenchmarkConfig {
 
 impl BenchmarkConfig {
     /// Create configuration from environment variables
-    /// Follows the Java pattern of using system properties
     pub fn from_env() -> Self {
         Self {
             endpoint: std::env::var("GREPTIME_ENDPOINT")
@@ -69,7 +63,7 @@ impl BenchmarkConfig {
             parallelism: std::env::var("parallelism")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(4),
+                .unwrap_or(8),
             compression: std::env::var("compression")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -200,29 +194,31 @@ impl BenchmarkRunner {
         let start_time = Instant::now();
         let mut rows_written = 0;
         let mut batch_count = 0;
-        let alloc_stats = Arc::new(AdaptiveAllocStats::new(32));
 
-        for rows in provider.generate_rows_batches(alloc_stats, self.config.batch_size) {
-            let Ok(rows) = rows else {
-                return result.error("Failed to generate rows".to_string());
-            };
+        let mut row_iter = provider.rows();
 
-            let write_result = self.write_rows(&mut bulk_writer, rows).await;
-            if let Err(e) = write_result {
-                return result.error(format!("Failed to write rows: {e:?}"));
+        loop {
+            let mut break_out = false;
+            let batch_size = self.config.batch_size;
+            let mut rows_buf = bulk_writer.alloc_rows_buffer(batch_size, 1024).unwrap();
+            for _ in 0..batch_size {
+                if let Some(row) = row_iter.next() {
+                    rows_buf.add_row(row).unwrap();
+                } else {
+                    break_out = true;
+                    break;
+                }
             }
 
-            let written = write_result.unwrap();
+            let _request_id = bulk_writer.write_rows_async(rows_buf).await.unwrap();
 
-            rows_written += written;
+            rows_written += batch_size;
             batch_count += 1;
 
-            // Progress reporting at different intervals
             let elapsed = start_time.elapsed();
             let rate = rows_written as f64 / elapsed.as_secs_f64();
             println!("→ Batch {batch_count}: {rows_written} rows processed ({rate:.0} rows/sec)");
 
-            // Flush completed responses periodically to free memory
             if batch_count % 10 == 0 {
                 let responses = bulk_writer.flush_completed_responses();
                 if !responses.is_empty() {
@@ -235,6 +231,10 @@ impl BenchmarkRunner {
                     );
                 }
             }
+
+            if break_out {
+                break;
+            }
         }
 
         // Finish writing
@@ -243,6 +243,9 @@ impl BenchmarkRunner {
             return result.error(format!("Failed to finish bulk writer: {e:?}"));
         }
         println!("All bulk writes completed successfully");
+
+        // Drop the iterator to release the mutable borrow
+        drop(row_iter);
 
         // Cleanup provider
         println!("Cleaning up data provider...");
@@ -284,19 +287,6 @@ impl BenchmarkRunner {
             .with_compression(compression)
             .with_parallelism(self.config.parallelism)
             .with_timeout(Duration::from_secs(60))
-    }
-
-    /// Write Rows using the new zero-cost API (the most efficient method)
-    /// This uses the new Rows abstraction with zero-cost RecordBatch conversion
-    async fn write_rows(
-        &self,
-        bulk_writer: &mut greptimedb_ingester::BulkStreamWriter,
-        rows: greptimedb_ingester::Rows,
-    ) -> Result<usize> {
-        let rows_count = rows.len();
-        let _request_id = bulk_writer.write_rows_async(rows).await?;
-        // Return the number of rows we sent (for statistics)
-        Ok(rows_count)
     }
 
     /// Display system information

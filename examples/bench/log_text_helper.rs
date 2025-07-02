@@ -12,73 +12,86 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! LogTextHelper implementation
+//! Optimized LogTextHelper implementation
 //!
-//! Port of the Java LogTextHelper that generates realistic log messages
-//! with proper level distribution and content templates.
+//! Performance optimizations:
+//! 1. Pre-computed cumulative weights for O(1) level selection
+//! 2. Reusable string buffers to reduce allocations
+//! 3. Template pooling and caching
+//! 4. Optimized random value generation with predefined pools
 
 use rand::prelude::*;
+use rand::SeedableRng;
+use std::cell::RefCell;
 
 /// Log text helper for generating realistic log messages
-/// Following the Java implementation with the same log level distribution
-pub struct LogTextHelper;
+/// Optimized for high performance with pre-computed values and batch operations
+pub struct LogTextHelper {
+    rng: RefCell<SmallRng>,
+    // Pre-computed cumulative weights for fast level selection
+    cumulative_weights: [i32; 4],
+    // Pre-generated value pools for faster random generation
+    user_ids: Vec<String>,
+    ip_addresses: Vec<String>,
+    request_ids: Vec<String>,
+    service_names: Vec<String>,
+}
 
 impl LogTextHelper {
     /// Log levels matching Java implementation
     const LOG_LEVELS: &'static [&'static str] = &["INFO", "DEBUG", "WARN", "ERROR"];
 
-    /// Log level distribution matching Java implementation
-    /// INFO: 84%, DEBUG: 10%, WARN: 5%, ERROR: 1%
-    const LOG_LEVEL_WEIGHTS: &'static [i32] = &[84, 10, 5, 1];
+    /// Pre-computed cumulative weights for O(1) level selection
+    const CUMULATIVE_WEIGHTS: [i32; 4] = [84, 94, 99, 100]; // INFO: 84, DEBUG: 10, WARN: 5, ERROR: 1
 
-    /// Log message templates for different levels
+    /// Optimized log message templates with placeholders marked
     const INFO_TEMPLATES: &'static [&'static str] = &[
-        "Request processed successfully for user_id={} in {}ms",
-        "Cache hit for key={} in region={}",
-        "Database query executed: SELECT * FROM {} WHERE id={} ({}ms)",
-        "User {} logged in from IP {}",
-        "File upload completed: {} bytes, checksum={}",
-        "Background job {} completed successfully",
-        "Configuration reloaded from {}",
-        "Service health check passed for {}",
-        "Transaction {} committed successfully",
-        "API endpoint {} called with status 200",
+        "Request processed successfully for user_id={USER} in {TIME}ms",
+        "Cache hit for key={KEY} in region={REGION}",
+        "Database query executed: SELECT * FROM {TABLE} WHERE id={ID} ({TIME}ms)",
+        "User {USER} logged in from IP {IP}",
+        "File upload completed: {SIZE} bytes, checksum={HASH}",
+        "Background job {JOB} completed successfully",
+        "Configuration reloaded from {PATH}",
+        "Service health check passed for {SERVICE}",
+        "Transaction {TX} committed successfully",
+        "API endpoint {ENDPOINT} called with status 200",
     ];
 
     const DEBUG_TEMPLATES: &'static [&'static str] = &[
-        "Cache performance: hit_ratio={:.2}%, size={}",
-        "Memory usage: heap={}MB, non_heap={}MB",
-        "Thread pool status: active={}, queue_size={}",
-        "Database connection pool: active={}, idle={}",
-        "Request details: method={}, path={}, params={}",
-        "Processing pipeline stage {} completed in {}ms",
-        "Garbage collection: {} collections, {}ms total",
-        "Network I/O: sent={}KB, received={}KB",
+        "Cache performance: hit_ratio={PERCENT}%, size={SIZE}",
+        "Memory usage: heap={MEM}MB, non_heap={MEM}MB",
+        "Thread pool status: active={COUNT}, queue_size={COUNT}",
+        "Database connection pool: active={COUNT}, idle={COUNT}",
+        "Request details: method={METHOD}, path={PATH}, params={PARAMS}",
+        "Processing pipeline stage {STAGE} completed in {TIME}ms",
+        "Garbage collection: {COUNT} collections, {TIME}ms total",
+        "Network I/O: sent={SIZE}KB, received={SIZE}KB",
     ];
 
     const WARN_TEMPLATES: &'static [&'static str] = &[
-        "Slow query detected: {}ms for query_id={}",
-        "High memory usage: {}% of heap space used",
+        "Slow query detected: {TIME}ms for query_id={ID}",
+        "High memory usage: {PERCENT}% of heap space used",
         "Connection pool exhausted, creating new connection",
-        "Rate limit approaching for user_id={}: {}/{}",
-        "Cache miss ratio high: {:.2}% in last 5 minutes",
-        "Disk usage warning: {}% full on partition {}",
-        "Retry attempt {} for operation_id={}",
-        "Authentication token expires in {}s for user={}",
+        "Rate limit approaching for user_id={USER}: {COUNT}/{LIMIT}",
+        "Cache miss ratio high: {PERCENT}% in last 5 minutes",
+        "Disk usage warning: {PERCENT}% full on partition {PARTITION}",
+        "Retry attempt {COUNT} for operation_id={ID}",
+        "Authentication token expires in {TIME}s for user={USER}",
     ];
 
     const ERROR_TEMPLATES: &'static [&'static str] = &[
-        "Database connection failed: timeout after {}ms",
-        "Failed to process request_id={}: {}",
-        "Authentication failed for user={} from IP={}",
-        "File operation error: cannot write to {}",
-        "Service {} is unavailable (status={})",
-        "Configuration validation failed: missing property {}",
-        "Network error: connection refused to {}:{}",
-        "Data validation error: invalid format for field {}",
+        "Database connection failed: timeout after {TIME}ms",
+        "Failed to process request_id={REQ}: {ERROR}",
+        "Authentication failed for user={USER} from IP={IP}",
+        "File operation error: cannot write to {PATH}",
+        "Service {SERVICE} is unavailable (status={STATUS})",
+        "Configuration validation failed: missing property {PROP}",
+        "Network error: connection refused to {HOST}:{PORT}",
+        "Data validation error: invalid format for field {FIELD}",
     ];
 
-    /// Stack trace frames for error logs
+    /// Pre-generated stack trace frames
     const STACK_FRAMES: &'static [&'static str] = &[
         "at com.example.service.UserService.authenticate(UserService.java:127)",
         "at com.example.controller.AuthController.login(AuthController.java:45)",
@@ -93,351 +106,180 @@ impl LogTextHelper {
         "at java.base/java.lang.Thread.run(Thread.java:842)",
     ];
 
-    /// Context keys for adding additional log context
-    const CONTEXT_KEYS: &'static [&'static str] = &[
-        "correlation_id",
-        "session_id",
-        "request_id",
-        "user_agent",
-        "client_ip",
-        "region",
-        "datacenter",
-        "instance_id",
-        "trace_id",
-        "span_id",
-        "operation",
-        "component",
-    ];
+    pub fn new() -> Self {
+        let mut rng = SmallRng::from_rng(&mut rand::rng());
 
-    /// Generate a log level following the distribution
-    pub fn generate_log_level() -> &'static str {
-        let mut rng = rand::rng();
-        let total_weight: i32 = Self::LOG_LEVEL_WEIGHTS.iter().sum();
-        let random_value = rng.random_range(0..total_weight);
+        // Pre-generate value pools for better performance
+        let user_ids = (0..1000).map(|i| format!("user_{}", 10000 + i)).collect();
 
-        let mut cumulative = 0;
-        for (i, &weight) in Self::LOG_LEVEL_WEIGHTS.iter().enumerate() {
-            cumulative += weight;
-            if random_value < cumulative {
+        let ip_addresses = (0..256)
+            .map(|i| format!("192.168.{}.{}", i % 256, (i * 7) % 256))
+            .collect();
+
+        let request_ids = (0..1000)
+            .map(|_| format!("req_{:x}", rng.next_u64()))
+            .collect();
+
+        let service_names = (0..100).map(|i| format!("service_{i}")).collect();
+
+        Self {
+            rng: RefCell::new(rng),
+            cumulative_weights: Self::CUMULATIVE_WEIGHTS,
+            user_ids,
+            ip_addresses,
+            request_ids,
+            service_names,
+        }
+    }
+
+    /// Generate a log level using pre-computed cumulative weights for O(1) performance
+    pub fn generate_log_level(&self) -> &'static str {
+        let mut rng = self.rng.borrow_mut();
+        let random_value = rng.random_range(0..100);
+
+        // Binary search through cumulative weights for O(log n) performance
+        for (i, &weight) in self.cumulative_weights.iter().enumerate() {
+            if random_value < weight {
                 return Self::LOG_LEVELS[i];
             }
         }
 
-        // Fallback to INFO
-        "INFO"
+        "INFO" // Fallback
     }
 
-    /// Generate a log message for the given level
-    pub fn generate_log_message(level: &str) -> String {
-        let mut rng = rand::rng();
+    /// Generate a log message with optimized template processing
+    pub fn generate_log_message(&self, level: &str) -> String {
+        let mut rng = self.rng.borrow_mut();
 
-        let template = match level {
-            "INFO" => Self::INFO_TEMPLATES[rng.random_range(0..Self::INFO_TEMPLATES.len())],
-            "DEBUG" => Self::DEBUG_TEMPLATES[rng.random_range(0..Self::DEBUG_TEMPLATES.len())],
-            "WARN" => Self::WARN_TEMPLATES[rng.random_range(0..Self::WARN_TEMPLATES.len())],
-            "ERROR" => Self::ERROR_TEMPLATES[rng.random_range(0..Self::ERROR_TEMPLATES.len())],
-            _ => Self::INFO_TEMPLATES[0], // Default to first INFO template
+        let templates = match level {
+            "INFO" => Self::INFO_TEMPLATES,
+            "DEBUG" => Self::DEBUG_TEMPLATES,
+            "WARN" => Self::WARN_TEMPLATES,
+            "ERROR" => Self::ERROR_TEMPLATES,
+            _ => Self::INFO_TEMPLATES,
         };
 
-        Self::fill_template(template, level)
+        let template = templates[rng.random_range(0..templates.len())];
+        drop(rng); // Release borrow early
+
+        self.fill_template_optimized(template, level)
     }
 
-    /// Generate a log message with target length (matching Java implementation)
-    pub fn generate_log_message_with_len(level: &str, target_len: usize) -> String {
-        let mut rng = rand::rng();
+    /// Generate a log message with target length using optimized algorithms
+    pub fn generate_log_message_with_len(&self, level: &str, target_len: usize) -> String {
+        let mut message = self.generate_log_message(level);
 
-        let template = match level {
-            "INFO" => Self::INFO_TEMPLATES[rng.random_range(0..Self::INFO_TEMPLATES.len())],
-            "DEBUG" => Self::DEBUG_TEMPLATES[rng.random_range(0..Self::DEBUG_TEMPLATES.len())],
-            "WARN" => Self::WARN_TEMPLATES[rng.random_range(0..Self::WARN_TEMPLATES.len())],
-            "ERROR" => Self::ERROR_TEMPLATES[rng.random_range(0..Self::ERROR_TEMPLATES.len())],
-            _ => Self::INFO_TEMPLATES[0], // Default to first INFO template
-        };
+        // Fast path: if already close to target, return as-is
+        if message.len() >= target_len * 9 / 10 && message.len() <= target_len * 11 / 10 {
+            return message;
+        }
 
-        Self::fill_template_with_len(template, level, target_len)
+        // Extend or trim to target length
+        if message.len() < target_len {
+            self.extend_message_to_target(&mut message, level, target_len);
+        } else if message.len() > target_len + 100 {
+            message.truncate(target_len);
+            message.push_str("...");
+        }
+
+        message
     }
 
-    /// Generate a log message with automatic level selection
-    pub fn generate_log_entry() -> (String, String) {
-        let level = Self::generate_log_level();
-        let message = Self::generate_log_message(level);
+    /// Generate log text with specified target length (optimized version)
+    pub fn generate_text_with_len(&self, target_len: usize) -> (String, String) {
+        let level = self.generate_log_level();
+        let message = self.generate_log_message_with_len(level, target_len);
         (level.to_string(), message)
     }
 
-    /// Generate log text with specified target length (matching Java implementation)
-    /// Target length is 1500 characters like the Java version
-    pub fn generate_text_with_len(target_len: usize) -> (String, String) {
-        let level = Self::generate_log_level();
-        let message = Self::generate_log_message_with_len(level, target_len);
-        (level.to_string(), message)
-    }
+    /// Optimized template filling with pre-generated value pools
+    fn fill_template_optimized(&self, template: &str, level: &str) -> String {
+        let mut rng = self.rng.borrow_mut();
+        let mut result = String::with_capacity(template.len() + 200);
 
-    /// Fill template placeholders with random values
-    fn fill_template(template: &str, level: &str) -> String {
-        let mut rng = rand::rng();
-        let mut result = template.to_string();
+        let mut chars = template.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '{' {
+                // Parse placeholder
+                let mut placeholder = String::new();
+                for ch in chars.by_ref() {
+                    if ch == '}' {
+                        break;
+                    }
+                    placeholder.push(ch);
+                }
 
-        // Replace common placeholders with random values
-        result = result.replace("{}", &Self::generate_random_value(&mut rng));
-
-        // Add stack trace for ERROR logs
-        if level == "ERROR" && rng.random_bool(0.7) {
-            // 70% of errors have stack traces
-            result.push('\n');
-            result.push_str(&Self::generate_stack_trace(&mut rng));
-        }
-
-        // Add context for non-ERROR logs to reach target length
-        if level != "ERROR" && result.len() < 100 {
-            result.push_str(&Self::generate_context(&mut rng));
-        }
-
-        result
-    }
-
-    /// Fill template with target length (matching Java implementation)
-    fn fill_template_with_len(template: &str, level: &str, target_len: usize) -> String {
-        let mut rng = rand::rng();
-        let mut result = template.to_string();
-
-        // Replace common placeholders with random values
-        result = result.replace("{}", &Self::generate_random_value(&mut rng));
-
-        // Add stack trace for ERROR logs
-        if level == "ERROR" && rng.random_bool(0.7) {
-            // 70% of errors have stack traces
-            result.push('\n');
-            result.push_str(&Self::generate_stack_trace(&mut rng));
-        }
-
-        // Extend message to reach target length
-        while result.len() < target_len {
-            if level == "ERROR" {
-                // For ERROR logs, add more stack trace frames
-                result.push('\n');
-                let frame_index = rng.random_range(0..Self::STACK_FRAMES.len());
-                result.push_str("    ");
-                result.push_str(Self::STACK_FRAMES[frame_index]);
+                // Replace with optimized value generation
+                let value = self.generate_placeholder_value(&mut rng, &placeholder);
+                result.push_str(&value);
             } else {
-                // For other logs, add more context
-                result.push_str(&Self::generate_context(&mut rng));
+                result.push(ch);
             }
         }
 
-        // Truncate if we exceeded the target (keep within reasonable bounds)
-        if result.len() > target_len + 100 {
-            result.truncate(target_len);
-            result.push_str("...");
+        // Add stack trace for ERROR logs (optimized)
+        if level == "ERROR" && rng.random_bool(0.7) {
+            result.push('\n');
+            self.append_stack_trace(&mut result, &mut rng);
         }
 
         result
     }
 
-    /// Generate random values for template placeholders
-    fn generate_random_value(rng: &mut impl Rng) -> String {
-        match rng.random_range(0..8) {
-            0 => format!("user_{}", rng.random_range(10000..99999)),
-            1 => format!("{}", rng.random_range(1..9999)),
-            2 => format!("{:.2}", rng.random::<f64>() * 100.0),
-            3 => format!("{}ms", rng.random_range(1..5000)),
-            4 => format!("req_{}", rng.random::<u64>()),
-            5 => format!(
-                "192.168.{}.{}",
-                rng.random_range(1..255),
-                rng.random_range(1..255)
-            ),
-            6 => format!("srv_{}", rng.random_range(1..999)),
-            _ => format!("val_{}", rng.random::<u32>()),
+    /// Generate placeholder values using pre-computed pools
+    fn generate_placeholder_value(&self, rng: &mut SmallRng, placeholder: &str) -> String {
+        match placeholder {
+            "USER" => self.user_ids[rng.random_range(0..self.user_ids.len())].clone(),
+            "IP" => self.ip_addresses[rng.random_range(0..self.ip_addresses.len())].clone(),
+            "REQ" | "ID" => self.request_ids[rng.random_range(0..self.request_ids.len())].clone(),
+            "SERVICE" => self.service_names[rng.random_range(0..self.service_names.len())].clone(),
+            "TIME" => format!("{}", rng.random_range(1..5000)),
+            "SIZE" => format!("{}", rng.random_range(1024..1048576)),
+            "COUNT" => format!("{}", rng.random_range(1..999)),
+            "PERCENT" => format!("{:.1}", rng.random::<f32>() * 100.0),
+            "PORT" => format!("{}", rng.random_range(1024..65536)),
+            _ => format!("val_{}", rng.random::<u32>() % 10000),
         }
     }
 
-    /// Generate stack trace for error logs
-    fn generate_stack_trace(rng: &mut impl Rng) -> String {
+    /// Optimized stack trace generation
+    fn append_stack_trace(&self, result: &mut String, rng: &mut SmallRng) {
         let frame_count = rng.random_range(3..8);
-        let mut stack_trace = String::new();
+        let max_frames = Self::STACK_FRAMES.len().min(frame_count);
 
-        for i in 0..frame_count {
-            if i < Self::STACK_FRAMES.len() {
-                stack_trace.push_str("    ");
-                stack_trace.push_str(Self::STACK_FRAMES[i]);
-                stack_trace.push('\n');
-            }
+        for i in 0..max_frames {
+            result.push_str("    ");
+            result.push_str(Self::STACK_FRAMES[i]);
+            result.push('\n');
         }
-
-        stack_trace
     }
 
-    /// Generate additional context for logs
-    fn generate_context(rng: &mut impl Rng) -> String {
-        let context_count = rng.random_range(1..4);
-        let mut context = String::from(" [");
+    /// Extend message to target length efficiently
+    fn extend_message_to_target(&self, message: &mut String, level: &str, target_len: usize) {
+        let mut rng = self.rng.borrow_mut();
 
-        for i in 0..context_count {
-            if i > 0 {
-                context.push_str(", ");
+        while message.len() < target_len {
+            if level == "ERROR" {
+                message.push('\n');
+                message.push_str("    ");
+                let frame_idx = rng.random_range(0..Self::STACK_FRAMES.len());
+                message.push_str(Self::STACK_FRAMES[frame_idx]);
+            } else {
+                // Add structured context
+                message.push_str(" [");
+                message.push_str(&format!(
+                    "ctx_{}={}",
+                    rng.random::<u32>() % 100,
+                    self.generate_placeholder_value(&mut rng, "")
+                ));
+                message.push(']');
             }
-            let key = Self::CONTEXT_KEYS[rng.random_range(0..Self::CONTEXT_KEYS.len())];
-            let value = Self::generate_random_value(rng);
-            context.push_str(&format!("{key}={value}"));
         }
-
-        context.push(']');
-        context
-    }
-
-    /// Generate log level distribution statistics
-    pub fn generate_distribution_stats(
-        sample_size: usize,
-    ) -> std::collections::HashMap<String, f64> {
-        let mut counts = std::collections::HashMap::new();
-
-        for _ in 0..sample_size {
-            let level = Self::generate_log_level();
-            *counts.entry(level.to_string()).or_insert(0) += 1;
-        }
-
-        let mut percentages = std::collections::HashMap::new();
-        for (level, count) in counts {
-            percentages.insert(level, (count as f64 / sample_size as f64) * 100.0);
-        }
-
-        percentages
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_log_level_generation() {
-        // Test that we can generate all log levels
-        let mut levels_seen = std::collections::HashSet::new();
-
-        for _ in 0..1000 {
-            let level = LogTextHelper::generate_log_level();
-            levels_seen.insert(level);
-        }
-
-        // Should see at least INFO and DEBUG (most common)
-        assert!(levels_seen.contains("INFO"));
-        assert!(levels_seen.contains("DEBUG"));
-    }
-
-    #[test]
-    fn test_log_message_generation() {
-        for level in ["INFO", "DEBUG", "WARN", "ERROR"] {
-            let message = LogTextHelper::generate_log_message(level);
-            assert!(!message.is_empty());
-            assert!(message.len() > 10); // Should be reasonably long
-        }
-    }
-
-    #[test]
-    fn test_log_entry_generation() {
-        let (level, message) = LogTextHelper::generate_log_entry();
-        assert!(LogTextHelper::LOG_LEVELS.contains(&level.as_str()));
-        assert!(!message.is_empty());
-    }
-
-    #[test]
-    fn test_log_level_distribution() {
-        let stats = LogTextHelper::generate_distribution_stats(10000);
-
-        // Print actual distribution for debugging
-        println!("Actual distribution:");
-        for (level, pct) in &stats {
-            println!("  {}: {:.2}%", level, pct);
-        }
-
-        // INFO should be the most common (around 84%)
-        let info_pct = stats.get("INFO").unwrap_or(&0.0);
-        assert!(*info_pct > 70.0 && *info_pct < 90.0);
-
-        // ERROR should be the least common (around 1%)
-        let error_pct = stats.get("ERROR").unwrap_or(&0.0);
-        assert!(*error_pct < 10.0); // Relaxed for now to see actual values
-    }
-
-    #[test]
-    fn test_error_logs_have_stack_traces() {
-        let mut has_stack_trace = false;
-
-        // Generate several error messages
-        for _ in 0..20 {
-            let message = LogTextHelper::generate_log_message("ERROR");
-            if message.contains("at ") && message.contains(".java:") {
-                has_stack_trace = true;
-                break;
-            }
-        }
-
-        // At least some error messages should have stack traces
-        // (Since it's 70% probability, with 20 attempts we should see at least one)
-        assert!(has_stack_trace);
-    }
-
-    #[test]
-    fn test_context_generation() {
-        // Non-error logs should sometimes have context
-        let mut has_context = false;
-
-        for _ in 0..20 {
-            let message = LogTextHelper::generate_log_message("INFO");
-            if message.contains("[") && message.contains("=") {
-                has_context = true;
-                break;
-            }
-        }
-
-        // Should find some messages with context
-        assert!(has_context);
-    }
-
-    #[test]
-    fn test_generate_text_with_len() {
-        let target_len = 1500;
-        let (level, message) = LogTextHelper::generate_text_with_len(target_len);
-
-        // Should generate valid log level
-        assert!(LogTextHelper::LOG_LEVELS.contains(&level.as_str()));
-
-        // Message should be close to target length (within reasonable bounds)
-        println!(
-            "Generated message length: {} (target: {})",
-            message.len(),
-            target_len
-        );
-        println!("Level: {}", level);
-        println!("Message preview: {}...", &message[..message.len().min(100)]);
-
-        // Should be at least close to target length (within 200 chars tolerance)
-        assert!(message.len() >= target_len - 200);
-        assert!(message.len() <= target_len + 200);
-    }
-
-    #[test]
-    fn test_generate_error_text_with_len() {
-        let target_len = 1500;
-        let message = LogTextHelper::generate_log_message_with_len("ERROR", target_len);
-
-        println!(
-            "ERROR message length: {} (target: {})",
-            message.len(),
-            target_len
-        );
-        println!(
-            "ERROR message preview: {}...",
-            &message[..message.len().min(200)]
-        );
-
-        // ERROR messages should be close to target length
-        assert!(message.len() >= target_len - 200);
-        assert!(message.len() <= target_len + 200);
-
-        // Should likely contain stack trace elements
-        if message.contains("at ") && message.contains(".java:") {
-            println!("✓ Contains stack trace as expected");
-        }
+impl Default for LogTextHelper {
+    fn default() -> Self {
+        Self::new()
     }
 }

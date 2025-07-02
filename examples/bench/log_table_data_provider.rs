@@ -17,13 +17,13 @@
 //! Generates synthetic log data following the Java LogTableDataProvider pattern,
 //! with 22 columns including timestamps, log entries, and hierarchical identifiers.
 
+use crate::bench::LogTextHelper;
+
 use super::benchmark_runner::BenchmarkConfig;
 use super::table_data_provider::TableDataProvider;
-use greptimedb_ingester::bulk::AdaptiveAllocStats;
-use greptimedb_ingester::{ColumnDataType, Row, Rows, TableSchema, Value};
+use greptimedb_ingester::{ColumnDataType, Row, TableSchema, Value};
 use rand::RngCore;
-use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// LogTableDataProvider that generates synthetic log data
 /// Following the Java implementation with 22 columns
@@ -32,290 +32,246 @@ pub struct LogTableDataProvider {
     row_count: usize,
     current_row: usize,
     // Performance optimization: reuse RNG and reduce allocations
+    #[allow(dead_code)]
     rng: Box<dyn RngCore>,
     base_time: i64,
+    // Optimized log text helper instance
+    #[allow(dead_code)]
+    log_helper: LogTextHelper,
+    // Pre-generated value pools for ultra-fast generation
+    host_ids: Vec<String>,
+    host_names: Vec<String>,
+    service_ids: Vec<String>,
+    service_names: Vec<String>,
+    container_ids: Vec<String>,
+    container_names: Vec<String>,
+    pod_ids: Vec<String>,
+    pod_names: Vec<String>,
+    cluster_ids: Vec<String>,
+    cluster_names: Vec<String>,
+    trace_ids: Vec<String>,
+    span_ids: Vec<String>,
+    user_ids: Vec<String>,
+    session_ids: Vec<String>,
+    request_ids: Vec<String>,
+    log_uids: Vec<String>,
+    // Pre-generated log messages and levels (batch)
+    log_entries: Vec<(String, String)>,
+    #[allow(dead_code)]
+    log_entry_index: usize,
 }
 
 impl LogTableDataProvider {
-    /// Create a new LogTableDataProvider
+    /// Create a new LogTableDataProvider with pre-generated value pools
     pub fn new(table_name: &str, config: &BenchmarkConfig) -> Self {
         let base_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64;
 
+        let mut temp_rng = rand::rng();
+        let log_helper = LogTextHelper::new();
+
+        // Pre-generate large pools of values for ultra-fast random access
+        let pool_size = 10000.min(config.table_row_count * 2);
+
+        println!("Pre-generating {pool_size} values for ultra-fast data generation...");
+        let start = std::time::Instant::now();
+
+        // Generate ID pools
+        let host_ids: Vec<String> = (0..pool_size)
+            .map(|i| format!("host-{}", temp_rng.next_u64() % 100000 + i as u64))
+            .collect();
+        let host_names: Vec<String> = (0..pool_size)
+            .map(Self::generate_name_suffix_simple)
+            .collect();
+        let service_ids: Vec<String> = (0..pool_size)
+            .map(|i| format!("service-{}", temp_rng.next_u64() % 100000 + i as u64))
+            .collect();
+        let service_names: Vec<String> = (0..pool_size)
+            .map(|i| Self::generate_name_suffix_simple(i + 1000))
+            .collect();
+        let container_ids: Vec<String> = (0..pool_size)
+            .map(|i| format!("container-{}", temp_rng.next_u64() % 100000 + i as u64))
+            .collect();
+        let container_names: Vec<String> = (0..pool_size)
+            .map(|i| Self::generate_name_suffix_simple(i + 2000))
+            .collect();
+        let pod_ids: Vec<String> = (0..pool_size)
+            .map(|i| format!("pod-{}", temp_rng.next_u64() % 100000 + i as u64))
+            .collect();
+        let pod_names: Vec<String> = (0..pool_size)
+            .map(|i| Self::generate_name_suffix_simple(i + 3000))
+            .collect();
+        let cluster_ids: Vec<String> = (0..pool_size)
+            .map(|i| format!("cluster-{}", temp_rng.next_u64() % 100000 + i as u64))
+            .collect();
+        let cluster_names: Vec<String> = (0..pool_size)
+            .map(|i| Self::generate_name_suffix_simple(i + 4000))
+            .collect();
+
+        // Generate trace/span/user pools
+        let trace_ids: Vec<String> = (0..pool_size)
+            .map(|_| format!("trace_{}", temp_rng.next_u64()))
+            .collect();
+        let span_ids: Vec<String> = (0..pool_size)
+            .map(|_| format!("span_{}", temp_rng.next_u64()))
+            .collect();
+        let user_ids: Vec<String> = (0..pool_size)
+            .map(|_| format!("user_{}", (temp_rng.next_u32() % 9999) + 1))
+            .collect();
+        let session_ids: Vec<String> = (0..pool_size)
+            .map(|_| format!("session_{}", temp_rng.next_u64()))
+            .collect();
+        let request_ids: Vec<String> = (0..pool_size)
+            .map(|_| format!("req_{}", temp_rng.next_u64()))
+            .collect();
+
+        // Generate log UIDs pool
+        let log_uids: Vec<String> = (0..pool_size)
+            .map(|i| format!("log_{}_{}", base_time + i as i64, i))
+            .collect();
+
+        // Pre-generate log entries in batches for better performance
+        let mut log_entries = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
+            log_entries.push(log_helper.generate_text_with_len(1500));
+        }
+
+        let elapsed = start.elapsed();
+        println!("Pre-generation completed in {}ms", elapsed.as_millis());
+
         Self {
             table_name: table_name.to_string(),
             row_count: config.table_row_count,
             current_row: 0,
-            rng: Box::new(rand::rng()),
+            rng: Box::new(temp_rng),
             base_time,
+            log_helper,
+            host_ids,
+            host_names,
+            service_ids,
+            service_names,
+            container_ids,
+            container_names,
+            pod_ids,
+            pod_names,
+            cluster_ids,
+            cluster_names,
+            trace_ids,
+            span_ids,
+            user_ids,
+            session_ids,
+            request_ids,
+            log_uids,
+            log_entries,
+            log_entry_index: 0,
         }
     }
 
-    /// Generate data directly into Rows using the new zero-cost API
-    /// This provides the best performance with user-friendly API
-    pub fn generate_rows_batches(
-        &mut self,
-        alloc_stats: Arc<AdaptiveAllocStats>,
-        batch_size: usize,
-    ) -> Box<dyn Iterator<Item = greptimedb_ingester::Result<Rows>> + '_> {
-        Box::new(RowsIterator {
-            provider: self,
-            alloc_stats,
-            batch_size,
-        })
-    }
-
-    /// Generate random ID with name pair (optimized version)
-    /// Following the Java nextIdWithName pattern
-    fn next_id_with_name_optimized(rng: &mut Box<dyn RngCore>, prefix: &str) -> (String, String) {
-        let id = rng.next_u64();
-        let name_suffix: String = (0..6)
-            .map(|_| {
-                let byte = (rng.next_u32() % 26) as u8 + b'a';
-                byte as char
-            })
-            .collect();
-
-        (format!("{prefix}-{id}"), format!("{prefix}-{name_suffix}"))
-    }
-
-    /// Generate optimized log text with 2k target length
-    fn generate_optimized_log_text(&mut self) -> (String, String) {
-        // Simple log level selection with same distribution
-        let level_choice = self.rng.next_u32() % 100;
-        let level = if level_choice < 84 {
-            "INFO"
-        } else if level_choice < 94 {
-            "DEBUG"
-        } else if level_choice < 99 {
-            "WARN"
-        } else {
-            "ERROR"
-        };
-
-        // Generate base message with realistic content
-        let mut message = match level {
-            "INFO" => format!(
-                "Request processed successfully for user_{} in {}ms. Database query executed successfully with {} rows affected. Cache hit ratio: {:.2}%. Memory usage: heap={}MB, non-heap={}MB. Thread pool status: active={}, queue_size={}. Network I/O: sent={}KB, received={}KB",
-                (self.rng.next_u32() % 89999) + 10000,
-                (self.rng.next_u32() % 4999) + 1,
-                (self.rng.next_u32() % 9999) + 1,
-                (self.rng.next_u32() % 10000) as f64 / 100.0,
-                (self.rng.next_u32() % 2048) + 512,
-                (self.rng.next_u32() % 512) + 128,
-                (self.rng.next_u32() % 50) + 1,
-                (self.rng.next_u32() % 1000) + 1,
-                (self.rng.next_u32() % 9999) + 1,
-                (self.rng.next_u32() % 9999) + 1
-            ),
-            "DEBUG" => format!(
-                "Detailed system metrics collected. CPU usage: {:.2}%, Memory usage: {:.2}%, Disk I/O: read={}KB/s, write={}KB/s. Database connection pool: active={}, idle={}, max={}. Cache statistics: hits={}, misses={}, evictions={}. JVM garbage collection: young_gen={}ms, old_gen={}ms",
-                (self.rng.next_u32() % 10000) as f64 / 100.0,
-                (self.rng.next_u32() % 10000) as f64 / 100.0,
-                (self.rng.next_u32() % 99999) + 1000,
-                (self.rng.next_u32() % 99999) + 1000,
-                (self.rng.next_u32() % 50) + 1,
-                (self.rng.next_u32() % 100) + 10,
-                (self.rng.next_u32() % 200) + 50,
-                (self.rng.next_u32() % 999999) + 100000,
-                (self.rng.next_u32() % 99999) + 1000,
-                (self.rng.next_u32() % 9999) + 100,
-                (self.rng.next_u32() % 500) + 50,
-                (self.rng.next_u32() % 2000) + 100
-            ),
-            "WARN" => format!(
-                "Performance degradation detected. High memory usage: {}% of heap space used. Slow queries detected: avg_time={}ms, max_time={}ms. Connection pool near exhaustion: {}/{} connections used. Rate limiting triggered for user_{}: {}/{} requests per minute. Disk usage warning: {}% full on partition /data. Cache miss ratio elevated: {:.2}% over last 15 minutes",
-                (self.rng.next_u32() % 40) + 60,
-                (self.rng.next_u32() % 4000) + 1000,
-                (self.rng.next_u32() % 8000) + 2000,
-                (self.rng.next_u32() % 95) + 80,
-                (self.rng.next_u32() % 50) + 100,
-                (self.rng.next_u32() % 89999) + 10000,
-                (self.rng.next_u32() % 950) + 950,
-                1000,
-                (self.rng.next_u32() % 30) + 70,
-                (self.rng.next_u32() % 5000) as f64 / 100.0
-            ),
-            "ERROR" => {
-                let service_id = (self.rng.next_u32() % 999) + 1;
-                format!(
-                    "Critical system failure detected. Database connection failed after {} retry attempts. Transaction rollback required for {} pending operations. Service service_{} is completely unavailable. Last successful health check: {} minutes ago. Error details: connection_timeout={}ms, max_retries_exceeded=true, circuit_breaker_state=OPEN",
-                    (self.rng.next_u32() % 10) + 3,
-                    (self.rng.next_u32() % 999) + 100,
-                    service_id,
-                    (self.rng.next_u32() % 60) + 5,
-                    (self.rng.next_u32() % 9000) + 1000
-                )
-            },
-            _ => "Unknown log level".to_string(),
-        };
-
-        // Add context metadata to reach ~2k length
-        let context_parts = [
-            format!("correlation_id=req_{}", self.rng.next_u64()),
-            format!("session_id=session_{}", self.rng.next_u64()),
-            format!("trace_id=trace_{}", self.rng.next_u64()),
-            format!("span_id=span_{}", self.rng.next_u64()),
-            format!(
-                "client_ip=192.168.{}.{}",
-                (self.rng.next_u32() % 254) + 1,
-                (self.rng.next_u32() % 254) + 1
-            ),
-            format!(
-                "user_agent=HttpClient/{}.{}",
-                (self.rng.next_u32() % 3) + 1,
-                (self.rng.next_u32() % 10)
-            ),
-            format!("datacenter=dc{}", (self.rng.next_u32() % 5) + 1),
-            format!(
-                "region=us-{}",
-                if self.rng.next_u32() % 2 == 0 {
-                    "west"
-                } else {
-                    "east"
-                }
-            ),
-            format!("instance_id=i-{:x}", self.rng.next_u64()),
-            format!("request_id=req_{}", self.rng.next_u64()),
-            format!("operation=operation_{}", (self.rng.next_u32() % 100) + 1),
-            format!("component=component_{}", (self.rng.next_u32() % 50) + 1),
-            format!("thread=thread-{}", (self.rng.next_u32() % 200) + 1),
-            format!(
-                "hostname=host-{}.example.com",
-                (self.rng.next_u32() % 999) + 1
-            ),
-            format!(
-                "environment={}",
-                if self.rng.next_u32() % 3 == 0 {
-                    "production"
-                } else if self.rng.next_u32() % 2 == 0 {
-                    "staging"
-                } else {
-                    "development"
-                }
-            ),
+    /// Generate optimized name suffix using lookup table (deterministic version)
+    fn generate_name_suffix_simple(seed: usize) -> String {
+        // Use deterministic generation for better performance
+        const SUFFIXES: &[&str] = &[
+            "alpha",
+            "beta",
+            "gamma",
+            "delta",
+            "epsilon",
+            "zeta",
+            "eta",
+            "theta",
+            "iota",
+            "kappa",
+            "lambda",
+            "mu",
+            "nu",
+            "xi",
+            "omicron",
+            "pi",
+            "rho",
+            "sigma",
+            "tau",
+            "upsilon",
+            "phi",
+            "chi",
+            "psi",
+            "omega",
+            "prime",
+            "secondary",
+            "tertiary",
+            "main",
+            "backup",
+            "standby",
+            "primary",
+            "replica",
+            "master",
+            "worker",
+            "node",
+            "edge",
         ];
 
-        message.push_str(" [");
-        for (i, part) in context_parts.iter().enumerate() {
-            if i > 0 {
-                message.push_str(", ");
-            }
-            message.push_str(part);
-        }
-        message.push(']');
-
-        // Add stack trace for ERROR logs to increase length
-        if level == "ERROR" {
-            let stack_frames = [
-                "at com.example.service.DatabaseService.connect(DatabaseService.java:127)",
-                "at com.example.service.DatabaseService.executeQuery(DatabaseService.java:89)",
-                "at com.example.controller.ApiController.processRequest(ApiController.java:45)",
-                "at com.example.filter.SecurityFilter.doFilter(SecurityFilter.java:83)",
-                "at com.example.middleware.RequestMiddleware.process(RequestMiddleware.java:156)",
-                "at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:119)",
-                "at com.example.repository.DatabaseRepository.findById(DatabaseRepository.java:234)",
-                "at com.example.service.DataService.processRequest(DataService.java:156)",
-                "at com.example.util.CacheManager.get(CacheManager.java:78)",
-                "at com.example.handler.RequestHandler.handle(RequestHandler.java:92)",
-                "at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1136)",
-                "at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:635)",
-                "at java.base/java.lang.Thread.run(Thread.java:842)",
-            ];
-
-            message.push_str("\nStack trace:");
-            for frame in &stack_frames[..(self.rng.next_u32() % 8 + 3) as usize] {
-                message.push_str("\n    ");
-                message.push_str(frame);
-            }
-        }
-
-        // Fill remaining space to reach approximately 2k if needed
-        while message.len() < 1300 {
-            let uuid1 = self.rng.next_u64();
-            let uuid2 = self.rng.next_u64();
-            message.push_str(&format!(
-                " Additional diagnostic info: timestamp={}, uuid=uuid-{:x}-{:x}, checksum={:x}, sequence={}, retry_count={}, elapsed_time={}ms",
-                self.base_time + self.current_row as i64,
-                uuid1,
-                uuid2,
-                self.rng.next_u64(),
-                self.current_row,
-                self.rng.next_u32() % 5,
-                (self.rng.next_u32() % 9999) + 1
-            ));
-        }
-
-        // Truncate if too long to keep around 2k
-        if message.len() > 1600 {
-            message.truncate(2000);
-            message.push_str("...");
-        }
-
-        (level.to_string(), message)
+        let idx = seed % SUFFIXES.len();
+        format!("{}{}", SUFFIXES[idx], seed % 1000)
     }
 
-    /// Generate a single log row
+    /// Generate a single log row using ultra-fast pre-generated pools
     fn generate_row(&mut self) -> Option<Row> {
         if self.current_row >= self.row_count {
             return None;
         }
 
-        // Use reused RNG and base time for better performance
+        // Ultra-fast index calculation using bit operations for better performance
+        let pool_len = self.host_ids.len();
+        let base_idx = self.current_row % pool_len;
+
+        // Use current row + small random offset for deterministic yet varied data
+        let random_offset = (self.current_row * 7 + 13) % pool_len; // Simple pseudo-random
         let timestamp =
-            self.base_time + self.current_row as i64 + (self.rng.next_u32() as i64 % 2000) - 1000;
+            self.base_time + self.current_row as i64 + (random_offset as i64 % 2000) - 1000;
 
-        // Generate log UID (unique identifier) - use current_row for uniqueness instead of UUID
-        let log_uid = format!("log_{}_{}", timestamp, self.current_row);
+        // Use pre-generated values with minimal cloning by accessing directly
+        let log_uid = &self.log_uids[base_idx];
 
-        // Generate log message and level using optimized method
-        let (log_level, log_message) = self.generate_optimized_log_text();
+        // Get pre-generated log entry with circular access
+        let log_entry_idx = self.current_row % self.log_entries.len();
+        let (log_level, log_message) = &self.log_entries[log_entry_idx];
 
-        // Generate hierarchical identifiers (following Java pattern)
-        let (host_id, host_name) = Self::next_id_with_name_optimized(&mut self.rng, "host");
-        let (service_id, service_name) =
-            Self::next_id_with_name_optimized(&mut self.rng, "service");
-        let (container_id, container_name) =
-            Self::next_id_with_name_optimized(&mut self.rng, "container");
-        let (pod_id, pod_name) = Self::next_id_with_name_optimized(&mut self.rng, "pod");
-        let (cluster_id, cluster_name) =
-            Self::next_id_with_name_optimized(&mut self.rng, "cluster");
+        // Use offset indices for variety without modulo operations
+        let idx1 = base_idx;
+        let idx2 = (base_idx + 1) % pool_len;
+        let idx3 = (base_idx + 2) % pool_len;
+        let idx4 = (base_idx + 3) % pool_len;
+        let idx5 = (base_idx + 4) % pool_len;
 
-        // Additional fields to match Java 22-column structure
-        let trace_id = format!("trace_{}", self.rng.next_u64());
-        let span_id = format!("span_{}", self.rng.next_u64());
-        let user_id = format!("user_{}", (self.rng.next_u32() % 9999) + 1);
-        let session_id = format!("session_{}", self.rng.next_u64());
-        let request_id = format!("req_{}", self.rng.next_u64());
-        let response_time_ms = ((self.rng.next_u32() % 999) + 1) as i64;
+        let response_time_ms = ((base_idx % 999) + 1) as i64;
 
         self.current_row += 1;
 
+        // Directly create values using references to avoid unnecessary clones
         Some(Row::new().add_values(vec![
-            Value::Timestamp(timestamp),              // ts
-            Value::String(log_uid),                   // log_uid
-            Value::String(log_message),               // log_message
-            Value::String(log_level.to_string()),     // log_level
-            Value::String(host_id),                   // host_id
-            Value::String(host_name),                 // host_name
-            Value::String(service_id),                // service_id
-            Value::String(service_name),              // service_name
-            Value::String(container_id),              // container_id
-            Value::String(container_name),            // container_name
-            Value::String(pod_id),                    // pod_id
-            Value::String(pod_name),                  // pod_name
-            Value::String(cluster_id),                // cluster_id
-            Value::String(cluster_name),              // cluster_name
-            Value::String(trace_id),                  // trace_id
-            Value::String(span_id),                   // span_id
-            Value::String(user_id),                   // user_id
-            Value::String(session_id),                // session_id
-            Value::String(request_id),                // request_id
-            Value::Int64(response_time_ms),           // response_time_ms
-            Value::String("application".to_string()), // log_source
-            Value::String("v1.0.0".to_string()),      // version
+            Value::Timestamp(timestamp),
+            Value::String(log_uid.clone()),
+            Value::String(log_message.clone()),
+            Value::String(log_level.clone()),
+            Value::String(self.host_ids[idx1].clone()),
+            Value::String(self.host_names[idx1].clone()),
+            Value::String(self.service_ids[idx2].clone()),
+            Value::String(self.service_names[idx2].clone()),
+            Value::String(self.container_ids[idx3].clone()),
+            Value::String(self.container_names[idx3].clone()),
+            Value::String(self.pod_ids[idx4].clone()),
+            Value::String(self.pod_names[idx4].clone()),
+            Value::String(self.cluster_ids[idx5].clone()),
+            Value::String(self.cluster_names[idx5].clone()),
+            Value::String(self.trace_ids[idx1].clone()),
+            Value::String(self.span_ids[idx2].clone()),
+            Value::String(self.user_ids[idx3].clone()),
+            Value::String(self.session_ids[idx4].clone()),
+            Value::String(self.request_ids[idx5].clone()),
+            Value::Int64(response_time_ms),
+            Value::String("application".to_string()),
+            Value::String("v1.0.0".to_string()),
         ]))
     }
 }
@@ -369,77 +325,5 @@ impl<'a> Iterator for LogRowIterator<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.provider.generate_row()
-    }
-}
-
-/// Iterator for generating Rows using the new zero-cost API
-struct RowsIterator<'a> {
-    provider: &'a mut LogTableDataProvider,
-    alloc_stats: Arc<AdaptiveAllocStats>,
-    batch_size: usize,
-}
-
-impl<'a> Iterator for RowsIterator<'a> {
-    type Item = greptimedb_ingester::Result<Rows>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.provider.current_row >= self.provider.row_count {
-            return None;
-        }
-
-        // Calculate actual batch size (might be smaller for the last batch)
-        let remaining_rows = self.provider.row_count - self.provider.current_row;
-        let actual_batch_size = remaining_rows.min(self.batch_size);
-
-        // Create Rows for this batch
-        let table_schema = self.provider.table_schema();
-        let mut rows = match Rows::new(
-            table_schema.columns(),
-            actual_batch_size,
-            1024,
-            self.alloc_stats.clone(),
-        ) {
-            Ok(rows) => rows,
-            Err(e) => return Some(Err(e)),
-        };
-
-        let now = Instant::now();
-        for _ in 0..actual_batch_size {
-            if let Some(row) = self.provider.generate_row() {
-                if let Err(e) = rows.add_row(row) {
-                    return Some(Err(e));
-                }
-            } else {
-                break;
-            }
-        }
-        let elapsed = now.elapsed();
-        println!("generate_row took {}ms", elapsed.as_millis());
-        Some(Ok(rows))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_table_schema() {
-        let config = BenchmarkConfig::default();
-        let provider = LogTableDataProvider::new("test_logs", &config);
-        let table = provider.table_schema();
-
-        assert_eq!(table.name(), "test_logs");
-        assert_eq!(table.columns().len(), 22); // Should match Java version
-    }
-
-    #[test]
-    fn test_next_id_with_name() {
-        let mut rng = rand::rng();
-        let (id, name) = LogTableDataProvider::next_id_with_name(&mut rng, "test");
-
-        assert!(id.starts_with("test-"));
-        assert!(name.starts_with("test-"));
-        assert_ne!(id, name); // Should be different
     }
 }
