@@ -131,6 +131,16 @@ impl Row {
         }
     }
 
+    /// Get the number of values in the row
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Check if the row is empty
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
     /// Create a row directly from values (more efficient than chaining add_value calls)
     pub fn from_values(values: Vec<Value>) -> Self {
         Self { values }

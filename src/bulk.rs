@@ -809,6 +809,7 @@ fn column_to_arrow_data_type(column: &Column) -> Result<DataType> {
 pub struct Rows {
     builder: RowBatchBuilder,
     schema: Arc<Schema>,
+    column_count: usize,
     // Row buffering for improved performance
     row_buffer: Vec<Row>,
     buffer_size: usize,
@@ -828,6 +829,7 @@ impl Rows {
         Ok(Self {
             builder,
             schema,
+            column_count: column_schemas.len(),
             row_buffer: Vec::with_capacity(row_buffer_size),
             buffer_size: row_buffer_size,
         })
@@ -851,6 +853,7 @@ impl Rows {
         Ok(Self {
             builder,
             schema: arrow_schema,
+            column_count: column_schemas.len(),
             row_buffer: Vec::with_capacity(row_buffer_size),
             buffer_size: row_buffer_size,
         })
@@ -858,6 +861,15 @@ impl Rows {
 
     /// Add a row to the collection using move semantics
     pub fn add_row(&mut self, row: Row) -> Result<()> {
+        // Validate column count matches schema
+        ensure!(
+            row.len() == self.column_count,
+            error::InvalidColumnCountSnafu {
+                expected: self.column_count,
+                actual: row.len(),
+            }
+        );
+
         self.row_buffer.push(row);
 
         // If buffer is full, flush it to a RecordBatch
