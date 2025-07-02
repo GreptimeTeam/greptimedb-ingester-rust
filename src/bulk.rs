@@ -689,16 +689,14 @@ impl BulkStreamWriter {
 
     /// Validate that the provided Rows schema matches the writer's bound schema
     fn validate_rows_schema(&self, rows: &Rows) -> Result<()> {
-        let rows_schema = rows.schema();
-
         // Fast path: if it's the exact same Arc, skip validation
-        if Arc::ptr_eq(&self.arrow_schema, rows_schema) {
+        if Arc::ptr_eq(&self.arrow_schema, &rows.schema) {
             return Ok(());
         }
 
         // Fast path: check field count first (cheapest comparison)
         let expected_fields = self.arrow_schema.fields();
-        let actual_fields = rows_schema.fields();
+        let actual_fields = rows.schema.fields();
 
         if expected_fields.len() != actual_fields.len() {
             return Self::schema_mismatch_error(expected_fields, actual_fields);
@@ -909,7 +907,7 @@ impl Rows {
 
     /// Get the schema
     #[must_use]
-    pub fn schema(&self) -> &Arc<Schema> {
+    pub fn schema(&self) -> &Schema {
         &self.schema
     }
 }
