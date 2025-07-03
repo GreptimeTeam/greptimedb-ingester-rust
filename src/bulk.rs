@@ -751,7 +751,7 @@ impl Rows {
         }
 
         // Process all rows in the buffer at once for better performance
-        let rows: Vec<Row> = self.row_buffer.drain(..).collect();
+        let rows = std::mem::take(&mut self.row_buffer);
         self.builder.add_rows(rows)?;
 
         Ok(())
