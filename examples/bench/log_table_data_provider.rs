@@ -31,13 +31,7 @@ pub struct LogTableDataProvider {
     table_name: String,
     row_count: usize,
     current_row: usize,
-    // Performance optimization: reuse RNG and reduce allocations
-    #[allow(dead_code)]
-    rng: Box<dyn RngCore>,
     base_time: i64,
-    // Optimized log text helper instance
-    #[allow(dead_code)]
-    log_helper: LogTextHelper,
     // Pre-generated value pools for ultra-fast generation
     host_ids: Vec<String>,
     host_names: Vec<String>,
@@ -57,8 +51,6 @@ pub struct LogTableDataProvider {
     log_uids: Vec<String>,
     // Pre-generated log messages and levels (batch)
     log_entries: Vec<(String, String)>,
-    #[allow(dead_code)]
-    log_entry_index: usize,
 }
 
 impl LogTableDataProvider {
@@ -145,9 +137,7 @@ impl LogTableDataProvider {
             table_name: table_name.to_string(),
             row_count: config.table_row_count,
             current_row: 0,
-            rng: Box::new(temp_rng),
             base_time,
-            log_helper,
             host_ids,
             host_names,
             service_ids,
@@ -165,7 +155,6 @@ impl LogTableDataProvider {
             request_ids,
             log_uids,
             log_entries,
-            log_entry_index: 0,
         }
     }
 
