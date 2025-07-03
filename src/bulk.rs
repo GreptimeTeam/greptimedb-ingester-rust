@@ -1135,6 +1135,30 @@ impl<'a> RowBuilder<'a> {
         Ok(self)
     }
 
+    /// Set a field value by index. This is faster than `set` as it avoids a map lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `index` is out of bounds.
+    pub fn set_by_index(mut self, index: usize, value: Value) -> Result<Self> {
+        ensure!(
+            index < self.values.len(),
+            error::InvalidColumnIndexSnafu {
+                index,
+                total: self.values.len(),
+            }
+        );
+
+        self.values[index] = Some(value);
+        Ok(self)
+    }
+
+    /// Get the number of columns
+    #[must_use]
+    pub fn column_count(&self) -> usize {
+        self.schema.len()
+    }
+
     /// Build the final Row, ensuring all required fields are set
     pub fn build(self) -> Result<Row> {
         let mut row_values = Vec::with_capacity(self.values.len());
