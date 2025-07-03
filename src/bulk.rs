@@ -83,8 +83,8 @@ impl BulkInserter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompressionType {
     None,
-    Lz4,
     #[default]
+    Lz4,
     Zstd,
 }
 
@@ -451,7 +451,7 @@ impl BulkStreamWriter {
             self.sender
                 .send(schema_data)
                 .await
-                .map_err(|_| error::SendDataSnafu.build())?;
+                .context(error::SendDataSnafu)?;
 
             let response_result = timeout(self.timeout, self.response_stream.next()).await;
             match response_result {
@@ -460,11 +460,11 @@ impl BulkStreamWriter {
                 }
                 Ok(None) => {}
                 Err(_) => {
-                    return Err(error::RequestTimeoutSnafu {
+                    return error::RequestTimeoutSnafu {
                         request_ids: vec![],
                         timeout: self.timeout,
                     }
-                    .build());
+                    .fail();
                 }
             }
 
@@ -485,10 +485,7 @@ impl BulkStreamWriter {
             .context(error::SerializeMetadataSnafu)?
             .into();
 
-        self.sender
-            .send(data)
-            .await
-            .map_err(|_| error::SendDataSnafu.build())?;
+        self.sender.send(data).await.context(error::SendDataSnafu)?;
 
         // Track this request but don't wait for response
         self.pending_requests.insert(request_id, Instant::now());
@@ -539,11 +536,11 @@ impl BulkStreamWriter {
             Ok(None) => return Ok(()), // Stream ended
             Err(_) => {
                 let pending_ids: Vec<RequestId> = self.pending_requests.keys().copied().collect();
-                return Err(error::RequestTimeoutSnafu {
+                return error::RequestTimeoutSnafu {
                     request_ids: pending_ids,
                     timeout: self.timeout,
                 }
-                .build());
+                .fail();
             }
         }
 

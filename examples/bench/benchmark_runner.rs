@@ -29,7 +29,7 @@ pub struct BenchmarkConfig {
     pub table_row_count: usize,
     pub batch_size: usize,
     pub parallelism: usize,
-    pub compression: bool,
+    pub compression: String,
 }
 
 impl Default for BenchmarkConfig {
@@ -40,7 +40,7 @@ impl Default for BenchmarkConfig {
             table_row_count: 1_000_000,
             batch_size: 64 * 1024,
             parallelism: 4,
-            compression: true,
+            compression: "lz4".to_string(),
         }
     }
 }
@@ -56,18 +56,15 @@ impl BenchmarkConfig {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1_000_000),
-            batch_size: std::env::var("batch_size")
+            batch_size: std::env::var("BATCH_SIZE")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(64 * 1024),
-            parallelism: std::env::var("parallelism")
+            parallelism: std::env::var("PARALLELISM")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(8),
-            compression: std::env::var("compression")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(true),
+            compression: std::env::var("COMPRESSION").unwrap_or_else(|_| "lz4".to_string()),
         }
     }
 }
@@ -210,10 +207,10 @@ impl BenchmarkRunner {
                 }
             }
 
-            let _request_id = bulk_writer.write_rows_async(rows_buf).await.unwrap();
-
-            rows_written += batch_size;
+            rows_written += rows_buf.len();
             batch_count += 1;
+
+            let _request_id = bulk_writer.write_rows_async(rows_buf).await.unwrap();
 
             let elapsed = start_time.elapsed();
             let rate = rows_written as f64 / elapsed.as_secs_f64();
@@ -277,10 +274,17 @@ impl BenchmarkRunner {
 
     /// Create bulk write options
     fn create_bulk_options(&self) -> BulkWriteOptions {
-        let compression = if self.config.compression {
-            CompressionType::Zstd
-        } else {
-            CompressionType::None
+        let compression = match self.config.compression.to_lowercase().as_str() {
+            "none" | "false" | "0" => CompressionType::None,
+            "lz4" => CompressionType::Lz4,
+            "zstd" => CompressionType::Zstd,
+            _ => {
+                println!(
+                    "Warning: unknown compression type '{}', defaulting to lz4",
+                    self.config.compression
+                );
+                CompressionType::Lz4
+            }
         };
 
         BulkWriteOptions::default()
@@ -303,9 +307,8 @@ impl BenchmarkRunner {
             println!("Hostname: {hostname}");
         }
 
-        if let Ok(cpu_count) = std::thread::available_parallelism() {
-            println!("CPU cores: {cpu_count}");
-        }
+        let cpu_count = num_cpus::get();
+        println!("CPU cores: {cpu_count}");
 
         println!(
             "Build profile: {}",

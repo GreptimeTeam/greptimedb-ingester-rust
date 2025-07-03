@@ -43,6 +43,7 @@ hyper-util = "0.1"
 tokio = { version = "1.40", features = ["full"] }
 derive-new = "0.7"
 uuid = { version = "1.0", features = ["v4"] }
+num_cpus = "1.16"
 
 # Integration tests configuration
 [[test]]
@@ -54,3 +55,6 @@ required-features = ["integration-tests"]
 [features]
 default = []
 integration-tests = []
+
+[profile.release]
+debug = true

@@ -105,8 +105,9 @@ pub enum Error {
         location: Location,
     },
 
-    #[snafu(display("Failed to send data to stream"))]
+    #[snafu(display("Failed to send data to stream: {}", source))]
     SendData {
+        source: futures::channel::mpsc::SendError,
         #[snafu(implicit)]
         location: Location,
     },
