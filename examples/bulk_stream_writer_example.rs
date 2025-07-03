@@ -16,8 +16,9 @@
 //! Best for: High-volume data ingestion, batch processing, ETL scenarios
 //! Demonstrates: Parallel request submission, async processing, performance optimization
 
-mod config_utils;
-use config_utils::DbConfig;
+#[path = "util/mod.rs"]
+mod util;
+use util::DbConfig;
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -138,7 +139,10 @@ async fn run_sequential_writes() -> Result<Duration> {
     let config = DbConfig::from_env();
     let urls = vec![config.endpoint.clone()];
     let grpc_client = Client::with_urls(&urls);
-    let bulk_inserter = BulkInserter::new(grpc_client, &config.database);
+    let bulk_inserter = BulkInserter::new(grpc_client, &config.dbname);
+
+    config.display();
+    println!();
 
     // Define time-series table schema for sensor data
     // IMPORTANT: Row data must match the exact column order defined in table_template
@@ -218,7 +222,10 @@ async fn run_parallel_writes() -> Result<Duration> {
     let config = DbConfig::from_env();
     let urls = vec![config.endpoint.clone()];
     let grpc_client = Client::with_urls(&urls);
-    let bulk_inserter = BulkInserter::new(grpc_client, &config.database);
+    let bulk_inserter = BulkInserter::new(grpc_client, &config.dbname);
+
+    config.display();
+    println!();
 
     // IMPORTANT: Row data must match the exact column order defined in table_template
     let table_template = TableSchema::builder()

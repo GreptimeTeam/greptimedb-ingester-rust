@@ -60,7 +60,7 @@ Both examples use environment variables for configuration. Create a `.env` file 
 
 ```bash
 export GREPTIMEDB_ENDPOINT="localhost:4001"
-export GREPTIMEDB_DATABASE="public"
+export GREPTIMEDB_DBNAME="public"
 ```
 
 Alternatively, modify `db-connection.toml`:

@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone)]
 pub struct BenchmarkConfig {
     pub endpoint: String,
-    pub database: String,
+    pub dbname: String,
     pub table_row_count: usize,
     pub batch_size: usize,
     pub parallelism: usize,
@@ -36,7 +36,7 @@ impl Default for BenchmarkConfig {
     fn default() -> Self {
         Self {
             endpoint: "localhost:4001".to_string(),
-            database: "public".to_string(),
+            dbname: "public".to_string(),
             table_row_count: 1_000_000,
             batch_size: 64 * 1024,
             parallelism: 4,
@@ -51,8 +51,8 @@ impl BenchmarkConfig {
         Self {
             endpoint: std::env::var("GREPTIME_ENDPOINT")
                 .unwrap_or_else(|_| "localhost:4001".to_string()),
-            database: std::env::var("GREPTIME_DATABASE").unwrap_or_else(|_| "public".to_string()),
-            table_row_count: std::env::var("table_row_count")
+            dbname: std::env::var("GREPTIMEDB_DBNAME").unwrap_or_else(|_| "public".to_string()),
+            table_row_count: std::env::var("TABLE_ROW_COUNT")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1_000_000),
@@ -165,7 +165,7 @@ impl BenchmarkRunner {
             Err(e) => return result.error(format!("Failed to create client: {e:?}")),
         };
 
-        let bulk_inserter = BulkInserter::new(client, &self.config.database);
+        let bulk_inserter = BulkInserter::new(client, &self.config.dbname);
 
         // Create bulk stream writer
         println!("Setting up bulk stream writer...");
@@ -297,7 +297,7 @@ impl BenchmarkRunner {
     pub fn display_system_info(&self) {
         println!("=== Benchmark Configuration ===");
         println!("Endpoint: {}", self.config.endpoint);
-        println!("Database: {}", self.config.database);
+        println!("Database: {}", self.config.dbname);
         println!("Max rows per provider: {}", self.config.table_row_count);
         println!("Batch size: {}", self.config.batch_size);
         println!("Parallelism: {}", self.config.parallelism);

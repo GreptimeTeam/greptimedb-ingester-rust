@@ -12,34 +12,58 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Database configuration utilities for examples
+//!
+//! This module provides utilities for loading GreptimeDB connection configuration
+//! from environment variables and configuration files.
+
 use std::fs;
 use std::io;
 
+/// Database connection configuration
+#[derive(Debug, Clone)]
 pub struct DbConfig {
     pub endpoint: String,
-    pub database: String,
+    pub dbname: String,
 }
 
 impl Default for DbConfig {
     fn default() -> Self {
         Self {
             endpoint: "localhost:4001".to_string(),
-            database: "public".to_string(),
+            dbname: "public".to_string(),
         }
     }
 }
 
 impl DbConfig {
+    /// Load configuration from environment variables, falling back to file and defaults
+    ///
+    /// Environment variables:
+    /// - `GREPTIMEDB_ENDPOINT`: Database endpoint (default: localhost:4001)
+    /// - `GREPTIMEDB_DBNAME`: Database name (default: public)
     pub fn from_env() -> Self {
         let config = Self::from_file().unwrap_or_default();
         Self {
             endpoint: std::env::var("GREPTIMEDB_ENDPOINT").unwrap_or(config.endpoint),
-            database: std::env::var("GREPTIMEDB_DBNAME").unwrap_or(config.database),
+            dbname: std::env::var("GREPTIMEDB_DBNAME").unwrap_or(config.dbname),
         }
     }
 
+    /// Load configuration from a TOML file
+    ///
+    /// Expected file format:
+    /// ```toml
+    /// endpoints = ["127.0.0.1:4001"]
+    /// dbname = "public"
+    /// ```
     pub fn from_file() -> io::Result<Self> {
-        let content = fs::read_to_string("examples/db-connection.toml")?;
+        Self::from_file_path("examples/db-connection.toml")
+    }
+
+    /// Load configuration from a specific file path
+    pub fn from_file_path(path: &str) -> io::Result<Self> {
+        let content = fs::read_to_string(path)?;
         let mut endpoint = String::new();
         let mut database = String::new();
 
@@ -67,13 +91,15 @@ impl DbConfig {
             }
         }
 
-        Ok(Self { endpoint, database })
+        Ok(Self {
+            endpoint,
+            dbname: database,
+        })
     }
-}
 
-#[allow(dead_code)]
-fn main() {
-    let config = DbConfig::from_env();
-    println!("Using GreptimeDB endpoint: {}", config.endpoint);
-    println!("Using database: {}", config.database);
+    /// Display current configuration
+    pub fn display(&self) {
+        println!("Using GreptimeDB endpoint: {}", self.endpoint);
+        println!("Using dbname: {}", self.dbname);
+    }
 }

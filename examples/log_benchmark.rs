@@ -18,15 +18,15 @@
 //! and measuring GreptimeDB ingestion performance.
 //!
 //! Usage:
-//!   cargo run --example log_benchmark
+//!   cargo run --example log_benchmark --release
 //!
 //! Environment variables:
 //!   GREPTIME_ENDPOINT - GreptimeDB endpoint (default: localhost:4001)
-//!   GREPTIME_DATABASE - Database name (default: public)  
-//!   table_row_count   - Number of rows to generate (default: 10000000)
-//!   batch_size        - Batch size for ingestion (default: 1000)
-//!   parallelism       - Parallel requests (default: 4)
-//!   compression       - Enable compression (default: true)
+//!   GREPTIMEDB_DBNAME - Database name (default: public)  
+//!   TABLE_ROW_COUNT   - Number of rows to generate (default: 1_000_000)
+//!   BATCH_SIZE        - Batch size for ingestion (default: 64 * 1024)
+//!   PARALLELISM       - Parallel requests (default: 8)
+//!   COMPRESSION       - Enable compression (default: lz4)
 
 mod bench;
 

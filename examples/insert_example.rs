@@ -15,8 +15,9 @@
 #![allow(clippy::print_stderr)]
 #![allow(clippy::print_stdout)]
 
-mod config_utils;
-use config_utils::DbConfig;
+#[path = "util/mod.rs"]
+mod util;
+use util::DbConfig;
 
 use greptimedb_ingester::api::v1::*;
 use greptimedb_ingester::client::Client;
@@ -34,8 +35,11 @@ pub async fn realtime_sensor_ingest() -> Result<()> {
     println!("Use case: Low-latency, small batch inserts for real-time applications");
     println!("When to use: IoT sensors, real-time monitoring, interactive applications\n");
 
+    config.display();
+    println!();
+
     let grpc_client = Client::with_urls(&urls);
-    let database = Database::new_with_dbname(&config.database, grpc_client);
+    let database = Database::new_with_dbname(&config.dbname, grpc_client);
 
     // Simulate real-time data arrival - small batches with immediate processing
     for batch_num in 1..=5 {
@@ -142,7 +146,10 @@ pub async fn data_types_demonstration() -> Result<()> {
     let config = DbConfig::from_env();
     let urls = vec![config.endpoint.clone()];
     let grpc_client = Client::with_urls(&urls);
-    let database = Database::new_with_dbname(&config.database, grpc_client);
+    let database = Database::new_with_dbname(&config.dbname, grpc_client);
+
+    config.display();
+    println!();
 
     println!("=== Data Types Example ===");
     println!("Demonstrating support for various GreptimeDB column types\n");
