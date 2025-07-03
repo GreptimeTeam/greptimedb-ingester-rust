@@ -46,7 +46,7 @@ use crate::flight::do_put::{DoPutMetadata, DoPutResponse};
 use crate::flight::{FlightEncoder, FlightMessage};
 use crate::table::{Column, DataTypeExtension, Row, TableSchema, Value};
 use crate::{error, Result};
-use snafu::{ensure, ResultExt};
+use snafu::{ensure, OptionExt, ResultExt};
 
 pub type RequestId = i64;
 
@@ -148,7 +148,7 @@ pub struct BulkStreamWriter {
     // Track pending requests: request_id -> sent_time
     pending_requests: HashMap<RequestId, Instant>,
     // Cache completed responses that were processed but not yet retrieved
-    completed_responses: HashMap<RequestId, DoPutResponse>,
+    completed_responses: HashMap<RequestId, (DoPutResponse, Instant)>,
 }
 
 impl BulkStreamWriter {
@@ -228,7 +228,7 @@ impl BulkStreamWriter {
         target_request_id: RequestId,
     ) -> Result<DoPutResponse> {
         // Check if the response is already cached
-        if let Some(response) = self.completed_responses.remove(&target_request_id) {
+        if let Some((response, _)) = self.completed_responses.remove(&target_request_id) {
             return Ok(response);
         }
 
@@ -261,7 +261,8 @@ impl BulkStreamWriter {
                 if request_id == target_request_id {
                     return Ok(response);
                 }
-                self.completed_responses.insert(request_id, response);
+                self.completed_responses
+                    .insert(request_id, (response, Instant::now()));
             } else {
                 return error::StreamEndedSnafu.fail();
             }
@@ -275,7 +276,7 @@ impl BulkStreamWriter {
 
         // First, drain all cached responses that have corresponding pending requests
         let completed_responses = std::mem::take(&mut self.completed_responses);
-        for (request_id, response) in completed_responses {
+        for (request_id, (response, _)) in completed_responses {
             // Always add response to results, and remove from pending if exists
             self.pending_requests.remove(&request_id);
             responses.push(response);
@@ -339,7 +340,10 @@ impl BulkStreamWriter {
     /// Returns a vector of completed responses that were flushed.
     pub fn flush_completed_responses(&mut self) -> Vec<DoPutResponse> {
         let responses = std::mem::take(&mut self.completed_responses);
-        responses.into_values().collect()
+        responses
+            .into_values()
+            .map(|(response, _)| response)
+            .collect()
     }
 
     /// Finish the bulk write operation and close the connection
@@ -355,7 +359,7 @@ impl BulkStreamWriter {
 
         // First, collect any already cached responses
         let completed_responses = std::mem::take(&mut self.completed_responses);
-        for (request_id, response) in completed_responses {
+        for (request_id, (response, _)) in completed_responses {
             // Remove from pending_requests if it exists, but collect the response regardless
             // This handles both normal cases and orphaned responses
             self.pending_requests.remove(&request_id);
@@ -422,7 +426,22 @@ impl BulkStreamWriter {
     fn receive_response_and_remove_pending(&mut self, response: DoPutResponse) {
         let request_id = response.request_id();
         self.pending_requests.remove(&request_id);
-        self.completed_responses.insert(request_id, response);
+        self.completed_responses
+            .insert(request_id, (response, Instant::now()));
+
+        // Clean up expired responses if cache is getting large
+        self.cleanup_expired_responses_if_needed();
+    }
+
+    /// Clean up expired responses when cache exceeds threshold to prevent unbounded growth
+    fn cleanup_expired_responses_if_needed(&mut self) {
+        const RESPONSE_CACHE_CLEANUP_THRESHOLD: usize = 1024;
+
+        if self.completed_responses.len() > RESPONSE_CACHE_CLEANUP_THRESHOLD {
+            let now = Instant::now();
+            self.completed_responses
+                .retain(|_, (_, cached_time)| now.duration_since(*cached_time) <= self.timeout);
+        }
     }
 
     /// Helper method to handle stream end cases
@@ -1124,14 +1143,12 @@ impl<'a> RowBuilder<'a> {
     /// Set a field value by name with O(1) lookup performance.
     /// This ensures correct field mapping and prevents field order mistakes.
     pub fn set(mut self, field_name: &str, value: Value) -> Result<Self> {
-        let field_index = self.field_map.get(field_name).copied().ok_or_else(|| {
-            error::MissingFieldSnafu {
-                field: field_name.to_string(),
-            }
-            .build()
-        })?;
+        let field_index = self
+            .field_map
+            .get(field_name)
+            .context(error::MissingFieldSnafu { field: field_name })?;
 
-        self.values[field_index] = Some(value);
+        self.values[*field_index] = Some(value);
         Ok(self)
     }
 
