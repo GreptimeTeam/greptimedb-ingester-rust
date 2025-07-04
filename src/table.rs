@@ -601,10 +601,9 @@ impl Row {
 /// Handle type mismatch with debug assertion
 #[inline]
 fn handle_type_mismatch<T>(index: usize, expected: &str, actual: &Value) -> Option<T> {
-    debug_assert!(
-        false,
-        "Expected `{expected}` value at index {index}, got {actual:?}"
-    );
+    if cfg!(debug_assertions) {
+        panic!("Expected `{expected}` value at index {index}, got {actual:?}")
+    }
     None
 }
 
