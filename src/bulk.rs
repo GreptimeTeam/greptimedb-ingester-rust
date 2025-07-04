@@ -22,6 +22,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use greptime_proto::v1::SemanticType;
 use tokio::select;
 use tokio::time::timeout;
 
@@ -166,8 +167,9 @@ impl BulkStreamWriter {
             .columns()
             .iter()
             .map(|col| {
+                let nullable = col.semantic_type != SemanticType::Timestamp;
                 column_to_arrow_data_type(col)
-                    .map(|data_type| Field::new(&col.name, data_type, true))
+                    .map(|data_type| Field::new(&col.name, data_type, nullable))
             })
             .collect();
         let arrow_schema = Arc::new(Schema::new(fields?));
@@ -827,8 +829,9 @@ impl RowBatchBuilder {
         let fields: Result<Vec<Field>> = column_schemas
             .iter()
             .map(|col| {
+                let nullable = col.semantic_type != SemanticType::Timestamp;
                 column_to_arrow_data_type(col)
-                    .map(|data_type| Field::new(&col.name, data_type, true))
+                    .map(|data_type| Field::new(&col.name, data_type, nullable))
             })
             .collect();
         let schema = Arc::new(Schema::new(fields?));
@@ -1298,5 +1301,136 @@ mod tests {
         // Test state after adding rows
         assert_eq!(rows.len(), 2);
         assert!(!rows.is_empty());
+    }
+
+    #[test]
+    fn test_non_nullable_timestamp_field_with_null_should_error() {
+        // Create schema with timestamp field (non-nullable)
+        let schema = vec![
+            Column {
+                name: "ts".to_string(),
+                data_type: ColumnDataType::TimestampMillisecond,
+                semantic_type: SemanticType::Timestamp,
+                data_type_extension: None,
+            },
+            Column {
+                name: "value".to_string(),
+                data_type: ColumnDataType::Int64,
+                semantic_type: SemanticType::Field,
+                data_type_extension: None,
+            },
+        ];
+
+        let mut rows = Rows::new(&schema, 5, 5).expect("Failed to create rows");
+
+        // Add a row with null timestamp (should cause error when converting to RecordBatch)
+        let row_with_null_timestamp =
+            crate::table::Row::new().add_values(vec![Value::Null, Value::Int64(42)]);
+
+        rows.add_row(row_with_null_timestamp)
+            .expect("Failed to add row");
+
+        // Converting to RecordBatch should fail because timestamp is null but field is non-nullable
+        let result = RecordBatch::try_from(rows);
+        assert!(
+            result.is_err(),
+            "Should fail when timestamp field contains null value"
+        );
+    }
+
+    #[test]
+    fn test_nullable_field_with_null_should_succeed() {
+        // Create schema with nullable field
+        let schema = vec![
+            Column {
+                name: "ts".to_string(),
+                data_type: ColumnDataType::TimestampMillisecond,
+                semantic_type: SemanticType::Timestamp,
+                data_type_extension: None,
+            },
+            Column {
+                name: "value".to_string(),
+                data_type: ColumnDataType::Int64,
+                semantic_type: SemanticType::Field,
+                data_type_extension: None,
+            },
+        ];
+
+        let mut rows = Rows::new(&schema, 5, 5).expect("Failed to create rows");
+
+        // Add a row with null value field (should succeed since value field is nullable)
+        let row_with_null_value = crate::table::Row::new()
+            .add_values(vec![Value::TimestampMillisecond(1234567890), Value::Null]);
+
+        rows.add_row(row_with_null_value)
+            .expect("Failed to add row");
+
+        // Converting to RecordBatch should succeed because value field is nullable
+        let result = RecordBatch::try_from(rows);
+        assert!(
+            result.is_ok(),
+            "Should succeed when nullable field contains null value"
+        );
+    }
+
+    #[test]
+    fn test_arrow_schema_nullable_fields() {
+        use arrow_schema::{DataType, Field};
+
+        // Create columns with different semantic types
+        let columns = [
+            Column {
+                name: "ts".to_string(),
+                data_type: ColumnDataType::TimestampMillisecond,
+                semantic_type: SemanticType::Timestamp,
+                data_type_extension: None,
+            },
+            Column {
+                name: "value".to_string(),
+                data_type: ColumnDataType::Int64,
+                semantic_type: SemanticType::Field,
+                data_type_extension: None,
+            },
+            Column {
+                name: "tag".to_string(),
+                data_type: ColumnDataType::String,
+                semantic_type: SemanticType::Tag,
+                data_type_extension: None,
+            },
+        ];
+
+        // Test the logic that creates Arrow schema fields
+        let fields: Vec<Field> = columns
+            .iter()
+            .map(|col| {
+                let nullable = col.semantic_type != SemanticType::Timestamp;
+                let data_type = match col.data_type {
+                    ColumnDataType::TimestampMillisecond => {
+                        DataType::Timestamp(TimeUnit::Millisecond, None)
+                    }
+                    ColumnDataType::Int64 => DataType::Int64,
+                    ColumnDataType::String => DataType::Utf8,
+                    _ => DataType::Utf8, // fallback
+                };
+                Field::new(&col.name, data_type, nullable)
+            })
+            .collect();
+
+        assert_eq!(fields.len(), 3);
+
+        // Timestamp field should be non-nullable
+        assert!(
+            !fields[0].is_nullable(),
+            "Timestamp field should be non-nullable"
+        );
+        assert_eq!(fields[0].name(), "ts");
+
+        // Value field should be nullable
+        assert!(fields[1].is_nullable(), "Value field should be nullable");
+        assert_eq!(fields[1].name(), "value");
+
+        // Tag field should be nullable
+        assert!(fields[2].is_nullable(), "Tag field should be nullable");
+        assert_eq!(fields[2].name(), "tag");
     }
 }
