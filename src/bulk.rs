@@ -1112,10 +1112,10 @@ impl_arrow_builder!(TimestampMicrosecondBuilder, get_timestamp_unchecked, i64);
 impl_arrow_builder!(TimestampNanosecondBuilder, get_timestamp_unchecked, i64);
 
 // Time types
-impl_arrow_builder!(Time32SecondBuilder, get_i32_unchecked, i32);
-impl_arrow_builder!(Time32MillisecondBuilder, get_i32_unchecked, i32);
-impl_arrow_builder!(Time64MicrosecondBuilder, get_i64_unchecked, i64);
-impl_arrow_builder!(Time64NanosecondBuilder, get_i64_unchecked, i64);
+impl_arrow_builder!(Time32SecondBuilder, get_time32_unchecked, i32);
+impl_arrow_builder!(Time32MillisecondBuilder, get_time32_unchecked, i32);
+impl_arrow_builder!(Time64MicrosecondBuilder, get_time64_unchecked, i64);
+impl_arrow_builder!(Time64NanosecondBuilder, get_time64_unchecked, i64);
 
 // Date types
 impl_arrow_builder!(Date32Builder, get_date_unchecked, i32);

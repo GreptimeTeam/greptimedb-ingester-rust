@@ -533,6 +533,50 @@ impl Row {
         }
     }
 
+    /// Get time32 value at index (safe version with bounds checking)
+    pub fn get_time32(&self, index: usize) -> Option<i32> {
+        match self.values.get(index)? {
+            Value::TimeSecond(v) => Some(*v),
+            Value::TimeMillisecond(v) => Some(*v),
+            Value::Null => None,
+            other => handle_type_mismatch(index, "time32", other),
+        }
+    }
+
+    /// Get time32 value at index (unsafe version without bounds checking)
+    /// # Safety
+    /// The caller must ensure that `index < self.values.len()`
+    pub unsafe fn get_time32_unchecked(&self, index: usize) -> Option<i32> {
+        match self.values.get_unchecked(index) {
+            Value::TimeSecond(v) => Some(*v),
+            Value::TimeMillisecond(v) => Some(*v),
+            Value::Null => None,
+            other => handle_type_mismatch(index, "time32", other),
+        }
+    }
+
+    /// Get time64 value at index (safe version with bounds checking)
+    pub fn get_time64(&self, index: usize) -> Option<i64> {
+        match self.values.get(index)? {
+            Value::TimeMicrosecond(v) => Some(*v),
+            Value::TimeNanosecond(v) => Some(*v),
+            Value::Null => None,
+            other => handle_type_mismatch(index, "time64", other),
+        }
+    }
+
+    /// Get time64 value at index (unsafe version without bounds checking)
+    /// # Safety
+    /// The caller must ensure that `index < self.values.len()`
+    pub unsafe fn get_time64_unchecked(&self, index: usize) -> Option<i64> {
+        match self.values.get_unchecked(index) {
+            Value::TimeMicrosecond(v) => Some(*v),
+            Value::TimeNanosecond(v) => Some(*v),
+            Value::Null => None,
+            other => handle_type_mismatch(index, "time64", other),
+        }
+    }
+
     /// Get decimal128 value at index (safe version with bounds checking)
     pub fn get_decimal128(&self, index: usize) -> Option<i128> {
         match self.values.get(index)? {
