@@ -168,7 +168,8 @@ impl Row {
     pub fn get_bool(&self, index: usize) -> Option<bool> {
         match self.values.get(index)? {
             Value::Boolean(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "boolean", other),
         }
     }
 
@@ -178,7 +179,8 @@ impl Row {
     pub unsafe fn get_bool_unchecked(&self, index: usize) -> Option<bool> {
         match self.values.get_unchecked(index) {
             Value::Boolean(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "boolean", other),
         }
     }
 
@@ -186,7 +188,8 @@ impl Row {
     pub fn get_i8(&self, index: usize) -> Option<i8> {
         match self.values.get(index)? {
             Value::Int8(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "i8", other),
         }
     }
 
@@ -196,7 +199,8 @@ impl Row {
     pub unsafe fn get_i8_unchecked(&self, index: usize) -> Option<i8> {
         match self.values.get_unchecked(index) {
             Value::Int8(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "i8", other),
         }
     }
 
@@ -204,7 +208,8 @@ impl Row {
     pub fn get_i16(&self, index: usize) -> Option<i16> {
         match self.values.get(index)? {
             Value::Int16(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "i16", other),
         }
     }
 
@@ -214,7 +219,8 @@ impl Row {
     pub unsafe fn get_i16_unchecked(&self, index: usize) -> Option<i16> {
         match self.values.get_unchecked(index) {
             Value::Int16(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "i16", other),
         }
     }
 
@@ -222,7 +228,8 @@ impl Row {
     pub fn get_i32(&self, index: usize) -> Option<i32> {
         match self.values.get(index)? {
             Value::Int32(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "i32", other),
         }
     }
 
@@ -232,7 +239,8 @@ impl Row {
     pub unsafe fn get_i32_unchecked(&self, index: usize) -> Option<i32> {
         match self.values.get_unchecked(index) {
             Value::Int32(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "i32", other),
         }
     }
 
@@ -240,7 +248,8 @@ impl Row {
     pub fn get_i64(&self, index: usize) -> Option<i64> {
         match self.values.get(index)? {
             Value::Int64(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "i64", other),
         }
     }
 
@@ -250,7 +259,8 @@ impl Row {
     pub unsafe fn get_i64_unchecked(&self, index: usize) -> Option<i64> {
         match self.values.get_unchecked(index) {
             Value::Int64(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "i64", other),
         }
     }
 
@@ -258,7 +268,8 @@ impl Row {
     pub fn get_u8(&self, index: usize) -> Option<u8> {
         match self.values.get(index)? {
             Value::Uint8(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "u8", other),
         }
     }
 
@@ -268,7 +279,8 @@ impl Row {
     pub unsafe fn get_u8_unchecked(&self, index: usize) -> Option<u8> {
         match self.values.get_unchecked(index) {
             Value::Uint8(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "u8", other),
         }
     }
 
@@ -276,7 +288,8 @@ impl Row {
     pub fn get_u16(&self, index: usize) -> Option<u16> {
         match self.values.get(index)? {
             Value::Uint16(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "u16", other),
         }
     }
 
@@ -286,7 +299,8 @@ impl Row {
     pub unsafe fn get_u16_unchecked(&self, index: usize) -> Option<u16> {
         match self.values.get_unchecked(index) {
             Value::Uint16(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "u16", other),
         }
     }
 
@@ -294,7 +308,8 @@ impl Row {
     pub fn get_u32(&self, index: usize) -> Option<u32> {
         match self.values.get(index)? {
             Value::Uint32(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "u32", other),
         }
     }
 
@@ -304,7 +319,8 @@ impl Row {
     pub unsafe fn get_u32_unchecked(&self, index: usize) -> Option<u32> {
         match self.values.get_unchecked(index) {
             Value::Uint32(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "u32", other),
         }
     }
 
@@ -312,7 +328,8 @@ impl Row {
     pub fn get_u64(&self, index: usize) -> Option<u64> {
         match self.values.get(index)? {
             Value::Uint64(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "u64", other),
         }
     }
 
@@ -322,7 +339,8 @@ impl Row {
     pub unsafe fn get_u64_unchecked(&self, index: usize) -> Option<u64> {
         match self.values.get_unchecked(index) {
             Value::Uint64(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "u64", other),
         }
     }
 
@@ -330,7 +348,8 @@ impl Row {
     pub fn get_f32(&self, index: usize) -> Option<f32> {
         match self.values.get(index)? {
             Value::Float32(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "f32", other),
         }
     }
 
@@ -340,7 +359,8 @@ impl Row {
     pub unsafe fn get_f32_unchecked(&self, index: usize) -> Option<f32> {
         match self.values.get_unchecked(index) {
             Value::Float32(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "f32", other),
         }
     }
 
@@ -348,7 +368,8 @@ impl Row {
     pub fn get_f64(&self, index: usize) -> Option<f64> {
         match self.values.get(index)? {
             Value::Float64(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "f64", other),
         }
     }
 
@@ -358,7 +379,8 @@ impl Row {
     pub unsafe fn get_f64_unchecked(&self, index: usize) -> Option<f64> {
         match self.values.get_unchecked(index) {
             Value::Float64(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "f64", other),
         }
     }
 
@@ -367,7 +389,8 @@ impl Row {
         match self.values.get(index)? {
             Value::Binary(v) => Some(v.clone()),
             Value::String(v) => Some(v.as_bytes().to_vec()), // JSON type
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "binary", other),
         }
     }
 
@@ -378,7 +401,8 @@ impl Row {
         match self.values.get_unchecked(index) {
             Value::Binary(v) => Some(v.clone()),
             Value::String(v) => Some(v.as_bytes().to_vec()), // JSON type
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "binary", other),
         }
     }
 
@@ -397,7 +421,8 @@ impl Row {
         match std::mem::replace(self.values.get_unchecked_mut(index), Value::Null) {
             Value::Binary(v) => Some(v),
             Value::String(v) => Some(v.into_bytes()), // JSON type
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "binary", &other),
         }
     }
 
@@ -405,7 +430,8 @@ impl Row {
     pub fn get_string(&self, index: usize) -> Option<String> {
         match self.values.get(index)? {
             Value::String(v) => Some(v.clone()),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "string", other),
         }
     }
 
@@ -415,7 +441,8 @@ impl Row {
     pub unsafe fn get_string_unchecked(&self, index: usize) -> Option<String> {
         match self.values.get_unchecked(index) {
             Value::String(v) => Some(v.clone()),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "string", other),
         }
     }
 
@@ -433,7 +460,8 @@ impl Row {
     pub unsafe fn take_string_unchecked(&mut self, index: usize) -> Option<String> {
         match std::mem::replace(self.values.get_unchecked_mut(index), Value::Null) {
             Value::String(v) => Some(v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "string", &other),
         }
     }
 
@@ -441,7 +469,8 @@ impl Row {
     pub fn get_date(&self, index: usize) -> Option<i32> {
         match self.values.get(index)? {
             Value::Date(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "date", other),
         }
     }
 
@@ -451,7 +480,8 @@ impl Row {
     pub unsafe fn get_date_unchecked(&self, index: usize) -> Option<i32> {
         match self.values.get_unchecked(index) {
             Value::Date(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "date", other),
         }
     }
 
@@ -459,7 +489,8 @@ impl Row {
     pub fn get_datetime(&self, index: usize) -> Option<i64> {
         match self.values.get(index)? {
             Value::Datetime(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "datetime", other),
         }
     }
 
@@ -469,7 +500,8 @@ impl Row {
     pub unsafe fn get_datetime_unchecked(&self, index: usize) -> Option<i64> {
         match self.values.get_unchecked(index) {
             Value::Datetime(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "datetime", other),
         }
     }
 
@@ -481,7 +513,8 @@ impl Row {
             Value::TimestampMillisecond(v) => Some(*v),
             Value::TimestampMicrosecond(v) => Some(*v),
             Value::TimestampNanosecond(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "timestamp", other),
         }
     }
 
@@ -495,7 +528,8 @@ impl Row {
             Value::TimestampMillisecond(v) => Some(*v),
             Value::TimestampMicrosecond(v) => Some(*v),
             Value::TimestampNanosecond(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "timestamp", other),
         }
     }
 
@@ -503,7 +537,8 @@ impl Row {
     pub fn get_decimal128(&self, index: usize) -> Option<i128> {
         match self.values.get(index)? {
             Value::Decimal128(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "decimal128", other),
         }
     }
 
@@ -513,9 +548,20 @@ impl Row {
     pub unsafe fn get_decimal128_unchecked(&self, index: usize) -> Option<i128> {
         match self.values.get_unchecked(index) {
             Value::Decimal128(v) => Some(*v),
-            _ => None,
+            Value::Null => None,
+            other => handle_type_mismatch(index, "decimal128", other),
         }
     }
+}
+
+/// Handle type mismatch with debug assertion
+#[inline]
+fn handle_type_mismatch<T>(index: usize, expected: &str, actual: &Value) -> Option<T> {
+    debug_assert!(
+        false,
+        "Expected `{expected}` value at index {index}, got {actual:?}"
+    );
+    None
 }
 
 /// Type-safe value wrapper for all GreptimeDB data types
@@ -567,4 +613,63 @@ pub enum Value {
 
     // Null value
     Null,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_bool_correct_types() {
+        let row = Row::from_values(vec![
+            Value::Boolean(true),
+            Value::Boolean(false),
+            Value::Null,
+        ]);
+
+        // Test correct type
+        assert_eq!(row.get_bool(0), Some(true));
+        assert_eq!(row.get_bool(1), Some(false));
+
+        // Test null value
+        assert_eq!(row.get_bool(2), None);
+    }
+
+    #[test]
+    fn test_get_bool_unchecked_correct_types() {
+        let row = Row::from_values(vec![
+            Value::Boolean(false),
+            Value::Boolean(true),
+            Value::Null,
+        ]);
+
+        unsafe {
+            // Test correct type
+            assert_eq!(row.get_bool_unchecked(0), Some(false));
+            assert_eq!(row.get_bool_unchecked(1), Some(true));
+
+            // Test null value
+            assert_eq!(row.get_bool_unchecked(2), None);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Expected `boolean` value at index 0, got Int32(42)")]
+    fn test_get_bool_type_mismatch_debug_assert() {
+        let row = Row::from_values(vec![Value::Int32(42)]);
+
+        // This should trigger debug_assert! in debug mode
+        let _ = row.get_bool(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Expected `boolean` value at index 0, got String(\"test\")")]
+    fn test_get_bool_unchecked_type_mismatch_debug_assert() {
+        let row = Row::from_values(vec![Value::String("test".to_string())]);
+
+        unsafe {
+            // This should trigger debug_assert! in debug mode
+            let _ = row.get_bool_unchecked(0);
+        }
+    }
 }
