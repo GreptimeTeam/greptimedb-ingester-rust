@@ -213,6 +213,8 @@ impl BulkStreamWriter {
     /// Submit rows for writing without waiting for response
     /// Returns a `request_id` that can be used to wait for the specific response
     pub async fn write_rows_async(&mut self, rows: Rows) -> Result<RequestId> {
+        // Ensure that the rows are not empty
+        ensure!(!rows.is_empty(), error::EmptyRowsSnafu);
         // Validate that the rows schema matches the writer's schema
         self.validate_rows_schema(&rows)?;
 
