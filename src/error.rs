@@ -119,6 +119,16 @@ pub enum Error {
     },
 
     #[snafu(display(
+        "Response stream ended unexpectedly with pending requests: {:?}",
+        request_ids
+    ))]
+    StreamEndedWithPendingRequests {
+        request_ids: Vec<i64>,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display(
         "Request timeout after {:?} for request IDs: {:?}",
         timeout,
         request_ids
