@@ -508,7 +508,6 @@ impl Row {
     /// Get timestamp value at index (generic, supports all timestamp types, safe version with bounds checking)
     pub fn get_timestamp(&self, index: usize) -> Option<i64> {
         match self.values.get(index)? {
-            Value::Timestamp(v) => Some(*v),
             Value::TimestampSecond(v) => Some(*v),
             Value::TimestampMillisecond(v) => Some(*v),
             Value::TimestampMicrosecond(v) => Some(*v),
@@ -523,7 +522,6 @@ impl Row {
     /// The caller must ensure that `index < self.values.len()`
     pub unsafe fn get_timestamp_unchecked(&self, index: usize) -> Option<i64> {
         match self.values.get_unchecked(index) {
-            Value::Timestamp(v) => Some(*v),
             Value::TimestampSecond(v) => Some(*v),
             Value::TimestampMillisecond(v) => Some(*v),
             Value::TimestampMicrosecond(v) => Some(*v),
@@ -636,7 +634,6 @@ pub enum Value {
     Datetime(i64), // Milliseconds since Unix epoch
 
     // Timestamp types
-    Timestamp(i64), // Generic timestamp (for backward compatibility)
     TimestampSecond(i64),
     TimestampMillisecond(i64),
     TimestampMicrosecond(i64),

@@ -408,7 +408,7 @@ fn create_test_batch_bulk(
         let status = if global_idx % 10 == 0 { 0 } else { 1 };
 
         let row = Row::new().add_values(vec![
-            Value::Timestamp(timestamp),
+            Value::TimestampMillisecond(timestamp),
             Value::String(sensor_id),
             Value::Float64(temperature),
             Value::Int64(status),

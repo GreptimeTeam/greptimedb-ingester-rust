@@ -147,7 +147,7 @@ async fn main() -> greptimedb_ingester::Result<()> {
     let mut rows1 = bulk_writer.alloc_rows_buffer(10000, 1024)?;  // capacity: 10000, row_buffer_size: 1024
     for data in &sensor_data {
         let row = Row::new().add_values(vec![
-            Value::Timestamp(data.timestamp),
+            Value::TimestampMillisecond(data.timestamp),
             Value::String(data.device_id.clone()),
             Value::Float64(data.temperature),
         ]);
@@ -159,7 +159,7 @@ async fn main() -> greptimedb_ingester::Result<()> {
     let mut rows2 = bulk_writer.alloc_rows_buffer(10000, 1024)?;  // capacity: 10000, row_buffer_size: 1024
     for data in &sensor_data {
         let row = bulk_writer.new_row()
-            .set("ts", Value::Timestamp(data.timestamp))?
+            .set("ts", Value::TimestampMillisecond(data.timestamp))?
             .set("device_id", Value::String(data.device_id.clone()))?
             .set("temperature", Value::Float64(data.temperature))?
             .build()?;
@@ -252,7 +252,7 @@ fn create_row() -> Row {
     let temperature = 25.0f64;
     
     Row::new().add_values(vec![
-        Value::Timestamp(ts),
+        Value::TimestampMillisecond(ts),
         Value::String(device_id),
         Value::Float64(temperature),
     ])
@@ -271,7 +271,7 @@ async fn example(bulk_writer: &BulkStreamWriter) -> greptimedb_ingester::Result<
     let temperature = 25.0f64;
     
     let row = bulk_writer.new_row()
-        .set("timestamp", Value::Timestamp(ts))?
+        .set("timestamp", Value::TimestampMillisecond(ts))?
         .set("device_id", Value::String(device_id))?
         .set("temperature", Value::Float64(temperature))?
         .build()?;

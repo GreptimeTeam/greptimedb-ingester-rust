@@ -239,7 +239,7 @@ impl LogTableDataProvider {
 
         // Directly create values using references to avoid unnecessary clones
         Some(Row::new().add_values(vec![
-            Value::Timestamp(timestamp),
+            Value::TimestampMillisecond(timestamp),
             Value::String(log_uid.clone()),
             Value::String(log_message.clone()),
             Value::String(log_level.clone()),

@@ -52,7 +52,7 @@ fn create_test_rows_optimized(
 
         // Traditional approach: build row by index (fast but error-prone)
         let row = Row::new().add_values(vec![
-            Value::Timestamp(timestamp),
+            Value::TimestampMillisecond(timestamp),
             Value::String(device_id),
             Value::Float64(temperature),
             Value::Int64(status),
@@ -87,7 +87,7 @@ fn create_test_rows_safe(
         // Schema-safe approach: build row by field name (safest)
         let row = writer
             .new_row()
-            .set("ts", Value::Timestamp(timestamp))?
+            .set("ts", Value::TimestampMillisecond(timestamp))?
             .set("sensor_id", Value::String(device_id))?
             .set("temperature", Value::Float64(temperature))?
             .set("sensor_status", Value::Int64(status))?
@@ -122,10 +122,10 @@ fn create_test_rows(
         // Row values must match table_template column order exactly:
         // Index 0: ts (timestamp), Index 1: sensor_id, Index 2: temperature, Index 3: sensor_status
         let row = Row::new().add_values(vec![
-            Value::Timestamp(timestamp), // Index 0: ts
-            Value::String(device_id),    // Index 1: sensor_id
-            Value::Float64(temperature), // Index 2: temperature
-            Value::Int64(status),        // Index 3: sensor_status
+            Value::TimestampMillisecond(timestamp), // Index 0: ts
+            Value::String(device_id),               // Index 1: sensor_id
+            Value::Float64(temperature),            // Index 2: temperature
+            Value::Int64(status),                   // Index 3: sensor_status
         ]);
         rows.add_row(row)?;
     }
