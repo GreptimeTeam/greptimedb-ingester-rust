@@ -38,7 +38,7 @@ use arrow_array::{Array, RecordBatch};
 use arrow_flight::{FlightData, FlightDescriptor};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use futures::channel::mpsc;
-use futures::{SinkExt, Stream, StreamExt};
+use futures::{FutureExt, SinkExt, Stream, StreamExt};
 
 use crate::api::v1::ColumnDataType;
 use crate::client::Client;
@@ -334,15 +334,10 @@ impl BulkStreamWriter {
 
                             // Drain immediately available responses to avoid false timeouts
                             loop {
-                                let drain_timeout = tokio::time::sleep(Duration::from_millis(1));
-                                select! {
-                                    () = drain_timeout => break,
-                                    next_option = self.response_stream.next() => {
-                                        match next_option {
-                                            Some(response) => self.handle_single_response(response?, &mut responses),
-                                            None => return self.handle_stream_end(responses),
-                                        }
-                                    }
+                                match self.response_stream.next().now_or_never() {
+                                    Some(Some(response)) => self.handle_single_response(response?, &mut responses),
+                                    Some(None) => return self.handle_stream_end(responses),
+                                    None => break, // No immediately available responses
                                 }
                             }
                         }
@@ -601,15 +596,12 @@ impl BulkStreamWriter {
 
         // Then drain any additional responses quickly
         loop {
-            let drain_timeout = tokio::time::sleep(Duration::from_micros(1));
-            select! {
-                () = drain_timeout => break,
-                next_option = self.response_stream.next() => {
-                    match next_option {
-                        Some(response) => self.receive_response_and_remove_pending(response?),
-                        None => return self.handle_stream_end_during_processing(),
-                    }
+            match self.response_stream.next().now_or_never() {
+                Some(Some(response)) => {
+                    self.receive_response_and_remove_pending(response?);
                 }
+                Some(None) => return self.handle_stream_end_during_processing(),
+                None => break, // No immediately available responses
             }
         }
 
