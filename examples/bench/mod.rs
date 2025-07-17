@@ -22,5 +22,5 @@ pub mod log_text_helper;
 pub mod table_data_provider;
 
 // Re-export main components
-pub use benchmark_runner::{show_benchmark_results, BenchmarkConfig};
+pub use benchmark_runner::{show_benchmark_result, BenchmarkConfig};
 pub use log_table_data_provider::LogTableDataProvider;

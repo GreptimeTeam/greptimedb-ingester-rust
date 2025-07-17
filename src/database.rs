@@ -57,11 +57,16 @@ pub struct DatabaseClient {
 
 fn make_database_client(client: &Client) -> Result<DatabaseClient> {
     let (_, channel) = client.find_channel()?;
-    Ok(DatabaseClient {
-        inner: GreptimeDatabaseClient::new(channel)
-            .max_decoding_message_size(client.max_grpc_recv_message_size())
-            .max_encoding_message_size(client.max_grpc_send_message_size()),
-    })
+    let mut inner = GreptimeDatabaseClient::new(channel)
+        .max_decoding_message_size(client.max_grpc_recv_message_size())
+        .max_encoding_message_size(client.max_grpc_send_message_size());
+    if let Some(send_compression) = client.send_compression() {
+        inner = inner.send_compressed(send_compression);
+    }
+    if let Some(accept_compression) = client.accept_compression() {
+        inner = inner.accept_compressed(accept_compression);
+    }
+    Ok(DatabaseClient { inner })
 }
 
 impl Database {
@@ -136,7 +141,7 @@ impl Database {
             MetadataValue::from_str(&self.dbname).context(error::InvalidTonicMetadataValueSnafu)?,
         );
 
-        let mut client = self.client.make_flight_client(false, false)?;
+        let mut client = self.client.make_flight_client()?;
         let response = client.mut_inner().do_put(request).await?;
         let response = response
             .into_inner()

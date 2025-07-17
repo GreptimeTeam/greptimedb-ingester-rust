@@ -120,21 +120,33 @@ impl Client {
         self.inner.channel_manager.config().max_send_message_size as usize
     }
 
-    pub fn make_flight_client(
-        &self,
-        send_compression: bool,
-        accept_compression: bool,
-    ) -> Result<FlightClient> {
+    pub fn send_compression(&self) -> Option<CompressionEncoding> {
+        if self.inner.channel_manager.config().send_compression {
+            Some(CompressionEncoding::Zstd)
+        } else {
+            None
+        }
+    }
+
+    pub fn accept_compression(&self) -> Option<CompressionEncoding> {
+        if self.inner.channel_manager.config().accept_compression {
+            Some(CompressionEncoding::Zstd)
+        } else {
+            None
+        }
+    }
+
+    pub fn make_flight_client(&self) -> Result<FlightClient> {
         let (addr, channel) = self.find_channel()?;
 
         let mut client = FlightServiceClient::new(channel)
             .max_decoding_message_size(self.max_grpc_recv_message_size())
             .max_encoding_message_size(self.max_grpc_send_message_size());
-        if send_compression {
-            client = client.send_compressed(CompressionEncoding::Zstd);
+        if let Some(send_compression) = self.send_compression() {
+            client = client.send_compressed(send_compression);
         }
-        if accept_compression {
-            client = client.accept_compressed(CompressionEncoding::Zstd);
+        if let Some(accept_compression) = self.accept_compression() {
+            client = client.accept_compressed(accept_compression);
         }
 
         Ok(FlightClient { addr, client })

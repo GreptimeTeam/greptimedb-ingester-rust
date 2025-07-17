@@ -67,7 +67,7 @@
 mod bench;
 
 use bench::benchmark_runner::BulkApiBenchmarkRunner;
-use bench::{show_benchmark_results, BenchmarkConfig, LogTableDataProvider};
+use bench::{show_benchmark_result, BenchmarkConfig, LogTableDataProvider};
 
 #[tokio::main]
 async fn main() -> greptimedb_ingester::Result<()> {
@@ -92,11 +92,11 @@ async fn main() -> greptimedb_ingester::Result<()> {
         .run_benchmark(log_provider, "LogTableDataProvider")
         .await;
 
-    // Display results
+    // Display result
     result.display();
 
-    // Show comprehensive results
-    show_benchmark_results(&[result]);
+    // Show benchmark result
+    show_benchmark_result(&[result]);
 
     Ok(())
 }

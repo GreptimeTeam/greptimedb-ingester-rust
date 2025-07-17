@@ -172,7 +172,6 @@ cargo run --example regular_api_log_benchmark --release
 ## Benchmark Results
 
 ### Test Environment
-- **CPU**: 10 cores
 - **Build Profile**: Release (optimized)
 - **Dataset**: 2,000,000 rows, 22 columns
 - **Batch Size**: 100,000 rows per batch
@@ -182,14 +181,13 @@ cargo run --example regular_api_log_benchmark --release
 
 | API Type | Throughput | Duration | Average Latency | Performance Gain |
 |----------|------------|----------|-----------------|------------------|
-| **Bulk API** | **154,655 rows/sec** | **12.93s** | N/A (async) | **+44.7%** |
-| Regular API | 106,872 rows/sec | 18.71s | 667.94ms | Baseline |
+| **Bulk API** | **155,099 rows/sec** | **12.90s** | N/A (async) | **+48.8%** |
+| Regular API | 104,237 rows/sec | 19.19s | 683.46ms | Baseline |
 
 ### Bulk API Results
 ```
 % cargo run --example bulk_api_log_benchmark --release
-   Compiling greptimedb-ingester v0.15.0 (/Users/jeremy/workspace/codes/greptimedb-ingester-rust)
-    Finished `release` profile [optimized + debuginfo] target(s) in 2.45s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.34s
      Running `target/release/examples/bulk_api_log_benchmark`
 === GreptimeDB Bulk API Log Benchmark ===
 Synthetic log data generation and bulk API ingestion performance test
@@ -206,7 +204,7 @@ Build profile: release
 
 === Running Bulk API Log Data Benchmark ===
 Pre-generating 10000 values for ultra-fast data generation...
-Pre-generation completed in 169ms
+Pre-generation completed in 171ms
 Setting up bulk stream writer...
 Starting bulk API benchmark: LogTableDataProvider
 Table: benchmark_logs (22 columns)
@@ -214,58 +212,58 @@ Target rows: 2000000
 Batch size: 100000
 Parallelism: 8
 
-→ Batch 1: 100000 rows processed (206174 rows/sec)
-→ Batch 2: 200000 rows processed (208237 rows/sec)
-→ Batch 3: 300000 rows processed (213118 rows/sec)
-→ Batch 4: 400000 rows processed (213122 rows/sec)
-→ Batch 5: 500000 rows processed (208223 rows/sec)
-→ Batch 6: 600000 rows processed (206783 rows/sec)
-→ Batch 7: 700000 rows processed (205819 rows/sec)
-→ Batch 8: 800000 rows processed (204782 rows/sec)
-→ Batch 9: 900000 rows processed (203174 rows/sec)
-→ Batch 10: 1000000 rows processed (203273 rows/sec)
-Flushed 5 responses (total 500000 affected rows)
-→ Batch 11: 1100000 rows processed (203345 rows/sec)
-→ Batch 12: 1200000 rows processed (203347 rows/sec)
-→ Batch 13: 1300000 rows processed (203847 rows/sec)
-→ Batch 14: 1400000 rows processed (203826 rows/sec)
-→ Batch 15: 1500000 rows processed (203501 rows/sec)
-→ Batch 16: 1600000 rows processed (203321 rows/sec)
-→ Batch 17: 1700000 rows processed (203008 rows/sec)
-→ Batch 18: 1800000 rows processed (203444 rows/sec)
-→ Batch 19: 1900000 rows processed (203249 rows/sec)
-→ Batch 20: 2000000 rows processed (202809 rows/sec)
-Flushed 7 responses (total 700000 affected rows)
+→ Batch 1: 100000 rows processed (201010 rows/sec)
+→ Batch 2: 200000 rows processed (198785 rows/sec)
+→ Batch 3: 300000 rows processed (203237 rows/sec)
+→ Batch 4: 400000 rows processed (204006 rows/sec)
+→ Batch 5: 500000 rows processed (204323 rows/sec)
+→ Batch 6: 600000 rows processed (207322 rows/sec)
+→ Batch 7: 700000 rows processed (191868 rows/sec)
+→ Batch 8: 800000 rows processed (192229 rows/sec)
+→ Batch 9: 900000 rows processed (192006 rows/sec)
+→ Batch 10: 1000000 rows processed (193897 rows/sec)
+Flushed 6 responses (total 600000 affected rows)
+→ Batch 11: 1100000 rows processed (193540 rows/sec)
+→ Batch 12: 1200000 rows processed (194421 rows/sec)
+→ Batch 13: 1300000 rows processed (193462 rows/sec)
+→ Batch 14: 1400000 rows processed (194540 rows/sec)
+→ Batch 15: 1500000 rows processed (195425 rows/sec)
+→ Batch 16: 1600000 rows processed (195795 rows/sec)
+→ Batch 17: 1700000 rows processed (195755 rows/sec)
+→ Batch 18: 1800000 rows processed (195425 rows/sec)
+→ Batch 19: 1900000 rows processed (195205 rows/sec)
+→ Batch 20: 2000000 rows processed (195556 rows/sec)
+Flushed 8 responses (total 800000 affected rows)
 Finishing bulk writer and waiting for all responses...
 All bulk writes completed successfully
 Cleaning up data provider...
 Bulk API benchmark completed successfully!
-Final Results:
+Final Result:
   • Total rows: 2000000
   • Total batches: 20
-  • Duration: 12.93s
-  • Throughput: 154651 rows/sec
+  • Duration: 12.90s
+  • Throughput: 155090 rows/sec
 
 === LogTableDataProvider Benchmark Results ===
 Table: benchmark_logs
 SUCCESS
 Total rows: 2000000
-Duration: 12932ms
-Throughput: 154655 rows/sec
+Duration: 12895ms
+Throughput: 155099 rows/sec
 
-=== Benchmark Comparison ===
-Fastest provider: LogTableDataProvider (154655 rows/sec)
+=== Benchmark Result ===
+Fastest provider: LogTableDataProvider (155099 rows/sec)
 
 Provider                          Rows Duration(ms)      Throughput     Status
 --------------------------------------------------------------------------
-LogTableDataProvider           2000000        12932     154655 r/s    SUCCESS
+LogTableDataProvider           2000000        12895     155099 r/s    SUCCESS
 ```
 
 ### Regular API Results
 ```
-% cargo run --example regular_api_log_benchmark --release
+% cargo run --example regular_api_log_benchmark --release      
    Compiling greptimedb-ingester v0.15.0 (/Users/jeremy/workspace/codes/greptimedb-ingester-rust)
-    Finished `release` profile [optimized + debuginfo] target(s) in 2.71s
+    Finished `release` profile [optimized + debuginfo] target(s) in 2.87s
      Running `target/release/examples/regular_api_log_benchmark`
 === GreptimeDB Regular API Log Benchmark ===
 Regular Database::insert() API performance test for log data
@@ -282,51 +280,51 @@ Build profile: release
 
 === Running Regular API Log Data Benchmark ===
 Pre-generating 10000 values for ultra-fast data generation...
-Pre-generation completed in 146ms
+Pre-generation completed in 169ms
 Starting regular API benchmark: Regular API
 Table: benchmark_logs (22 columns)
 Target rows: 2000000
 Batch size: 100000
 
-→ Batch 1: 100000 rows processed, 100000 affected (126551 rows/sec, 632.74ms latency)
-→ Batch 2: 100000 rows processed, 100000 affected (120220 rows/sec, 621.99ms latency)
-→ Batch 3: 100000 rows processed, 100000 affected (117597 rows/sec, 627.52ms latency)
-→ Batch 4: 100000 rows processed, 100000 affected (119874 rows/sec, 550.78ms latency)
-→ Batch 5: 100000 rows processed, 100000 affected (120046 rows/sec, 598.94ms latency)
-→ Batch 6: 100000 rows processed, 100000 affected (111263 rows/sec, 805.44ms latency)
-→ Batch 7: 100000 rows processed, 100000 affected (110980 rows/sec, 633.58ms latency)
-→ Batch 8: 100000 rows processed, 100000 affected (104324 rows/sec, 1066.02ms latency)
-→ Batch 9: 100000 rows processed, 100000 affected (105995 rows/sec, 587.05ms latency)
-→ Batch 10: 100000 rows processed, 100000 affected (105630 rows/sec, 761.72ms latency)
-→ Batch 11: 100000 rows processed, 100000 affected (106755 rows/sec, 588.12ms latency)
-→ Batch 12: 100000 rows processed, 100000 affected (108126 rows/sec, 560.52ms latency)
-→ Batch 13: 100000 rows processed, 100000 affected (109697 rows/sec, 536.07ms latency)
-→ Batch 14: 100000 rows processed, 100000 affected (106446 rows/sec, 865.18ms latency)
-→ Batch 15: 100000 rows processed, 100000 affected (106613 rows/sec, 681.73ms latency)
-→ Batch 16: 100000 rows processed, 100000 affected (106358 rows/sec, 738.93ms latency)
-→ Batch 17: 100000 rows processed, 100000 affected (107184 rows/sec, 581.04ms latency)
-→ Batch 18: 100000 rows processed, 100000 affected (106432 rows/sec, 702.45ms latency)
-→ Batch 19: 100000 rows processed, 100000 affected (106657 rows/sec, 634.81ms latency)
-→ Batch 20: 100000 rows processed, 100000 affected (107343 rows/sec, 584.20ms latency)
+→ Batch 1: 100000 rows processed, 100000 affected (125120 rows/sec, 641.73ms latency)
+→ Batch 2: 100000 rows processed, 100000 affected (123708 rows/sec, 588.98ms latency)
+→ Batch 3: 100000 rows processed, 100000 affected (125535 rows/sec, 535.33ms latency)
+→ Batch 4: 100000 rows processed, 100000 affected (122755 rows/sec, 571.71ms latency)
+→ Batch 5: 100000 rows processed, 100000 affected (121298 rows/sec, 570.69ms latency)
+→ Batch 6: 100000 rows processed, 100000 affected (122525 rows/sec, 535.37ms latency)
+→ Batch 7: 100000 rows processed, 100000 affected (120788 rows/sec, 653.73ms latency)
+→ Batch 8: 100000 rows processed, 100000 affected (120233 rows/sec, 585.71ms latency)
+→ Batch 9: 100000 rows processed, 100000 affected (120180 rows/sec, 617.02ms latency)
+→ Batch 10: 100000 rows processed, 100000 affected (119781 rows/sec, 620.04ms latency)
+→ Batch 11: 100000 rows processed, 100000 affected (119217 rows/sec, 633.56ms latency)
+→ Batch 12: 100000 rows processed, 100000 affected (119380 rows/sec, 578.15ms latency)
+→ Batch 13: 100000 rows processed, 100000 affected (119470 rows/sec, 590.72ms latency)
+→ Batch 14: 100000 rows processed, 100000 affected (119264 rows/sec, 626.57ms latency)
+→ Batch 15: 100000 rows processed, 100000 affected (119683 rows/sec, 560.39ms latency)
+→ Batch 16: 100000 rows processed, 100000 affected (120009 rows/sec, 582.01ms latency)
+→ Batch 17: 100000 rows processed, 100000 affected (113583 rows/sec, 1312.08ms latency)
+→ Batch 18: 100000 rows processed, 100000 affected (108054 rows/sec, 1247.68ms latency)
+→ Batch 19: 100000 rows processed, 100000 affected (105129 rows/sec, 841.73ms latency)
+→ Batch 20: 100000 rows processed, 100000 affected (104761 rows/sec, 775.90ms latency)
 Regular API benchmark completed successfully!
-Final Results:
+Final Result:
   • Total rows: 2000000
   • Total batches: 20
-  • Duration: 18.71s
-  • Throughput: 106870 rows/sec
-  • Average latency: 667.94ms
+  • Duration: 19.19s
+  • Throughput: 104232 rows/sec
+  • Average latency: 683.46ms
 
-=== Regular API Benchmark Results ===
+=== Regular API Benchmark Result ===
 Table: benchmark_logs
 SUCCESS
 Total rows: 2000000
-Duration: 18714ms
-Throughput: 106872 rows/sec
+Duration: 19187ms
+Throughput: 104237 rows/sec
 
-=== Benchmark Comparison ===
-Fastest provider: Regular API (106872 rows/sec)
+=== Benchmark Result ===
+Fastest provider: Regular API (104237 rows/sec)
 
 Provider                          Rows Duration(ms)      Throughput     Status
 --------------------------------------------------------------------------
-Regular API                    2000000        18714     106872 r/s    SUCCESS
+Regular API                    2000000        19187     104237 r/s    SUCCESS
 ```

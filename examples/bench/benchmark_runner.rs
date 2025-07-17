@@ -115,9 +115,9 @@ impl BenchmarkResult {
         self
     }
 
-    /// Display formatted results
+    /// Display formatted result
     pub fn display(&self) {
-        println!("=== {} Benchmark Results ===", self.provider_name);
+        println!("=== {} Benchmark Result ===", self.provider_name);
         println!("Table: {}", self.table_name);
 
         if self.success {
@@ -221,7 +221,11 @@ impl BulkApiBenchmarkRunner {
             rows_written += len;
             batch_count += 1;
 
-            let _request_id = bulk_writer.write_rows_async(rows_buf).await.unwrap();
+            let res = bulk_writer.write_rows_async(rows_buf).await;
+            if let Err(e) = res {
+                println!("Failed to write rows: {e:?}");
+                break;
+            }
 
             let elapsed = start_time.elapsed();
             let rate = rows_written as f64 / elapsed.as_secs_f64();
@@ -247,7 +251,7 @@ impl BulkApiBenchmarkRunner {
 
         // Finish writing
         println!("Finishing bulk writer and waiting for all responses...");
-        if let Err(e) = bulk_writer.finish().await {
+        if let Err(e) = bulk_writer.finish_with_responses().await {
             return result.error(format!("Failed to finish bulk writer: {e:?}"));
         }
         println!("All bulk writes completed successfully");
@@ -263,7 +267,7 @@ impl BulkApiBenchmarkRunner {
 
         let duration = start_time.elapsed();
         println!("Bulk API benchmark completed successfully!");
-        println!("Final Results:");
+        println!("Final Result:");
         println!("  • Total rows: {rows_written}");
         println!("  • Total batches: {batch_count}");
         println!("  • Duration: {:.2}s", duration.as_secs_f64());
@@ -333,13 +337,13 @@ impl BulkApiBenchmarkRunner {
     }
 }
 
-/// Compare multiple benchmark results
-pub fn show_benchmark_results(results: &[BenchmarkResult]) {
+/// Show benchmark result
+pub fn show_benchmark_result(results: &[BenchmarkResult]) {
     if results.is_empty() {
         return;
     }
 
-    println!("=== Benchmark Comparison ===");
+    println!("=== Benchmark Result ===");
 
     let successful_results: Vec<_> = results.iter().filter(|r| r.success).collect();
 
@@ -525,7 +529,7 @@ impl RegularApiBenchmarkRunner {
         };
 
         println!("Regular API benchmark completed successfully!");
-        println!("Final Results:");
+        println!("Final Result:");
         println!("  • Total rows: {rows_written}");
         println!("  • Total batches: {batch_count}");
         println!("  • Duration: {:.2}s", duration.as_secs_f64());

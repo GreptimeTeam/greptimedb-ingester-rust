@@ -29,7 +29,7 @@
 mod bench;
 
 use bench::benchmark_runner::RegularApiBenchmarkRunner;
-use bench::{show_benchmark_results, BenchmarkConfig, LogTableDataProvider};
+use bench::{show_benchmark_result, BenchmarkConfig, LogTableDataProvider};
 
 #[tokio::main]
 async fn main() -> greptimedb_ingester::Result<()> {
@@ -54,11 +54,11 @@ async fn main() -> greptimedb_ingester::Result<()> {
         .run_regular_api_benchmark(log_provider, "Regular API")
         .await;
 
-    // Display results
+    // Display result
     result.display();
 
-    // Show comprehensive results in comparable format
-    show_benchmark_results(&[result]);
+    // Show benchmark result
+    show_benchmark_result(&[result]);
 
     Ok(())
 }
