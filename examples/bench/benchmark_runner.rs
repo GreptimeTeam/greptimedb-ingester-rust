@@ -17,8 +17,12 @@
 //! Provides a framework for running benchmarks with different TableDataProvider implementations.
 //! This module handles benchmark execution, configuration, and results.
 
-use super::table_data_provider::TableDataProvider;
-use greptimedb_ingester::{BulkInserter, BulkWriteOptions, CompressionType, Result};
+use super::table_data_provider::{ApiDataProvider, TableDataProvider};
+use greptimedb_ingester::{
+    api::v1::{RowInsertRequest, RowInsertRequests, Rows as ApiRows},
+    database::Database,
+    BulkInserter, BulkWriteOptions, CompressionType, Result,
+};
 use std::time::{Duration, Instant};
 
 /// Configuration for benchmark runs
@@ -55,11 +59,11 @@ impl BenchmarkConfig {
             table_row_count: std::env::var("TABLE_ROW_COUNT")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(1_000_000),
+                .unwrap_or(2_000_000),
             batch_size: std::env::var("BATCH_SIZE")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(64 * 1024),
+                .unwrap_or(100_000),
             parallelism: std::env::var("PARALLELISM")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -131,21 +135,23 @@ impl BenchmarkResult {
     }
 }
 
-/// Benchmark runner that can execute tests with any TableDataProvider
-pub struct BenchmarkRunner {
+/// Bulk API Benchmark runner that can execute tests with any TableDataProvider
+#[allow(dead_code)] // May be unused depending on which examples are being compiled
+pub struct BulkApiBenchmarkRunner {
     config: BenchmarkConfig,
 }
 
-impl BenchmarkRunner {
+#[allow(dead_code)] // May be unused depending on which examples are being compiled
+impl BulkApiBenchmarkRunner {
     /// Create a new benchmark runner with configuration
     pub fn new(config: BenchmarkConfig) -> Self {
         Self { config }
     }
 
-    /// Run a benchmark with the given provider using the zero-cost Rows API
-    pub async fn run_benchmark(
+    /// Run a bulk API benchmark with the given provider using the zero-cost Rows API
+    pub async fn run_benchmark<P: TableDataProvider>(
         &self,
-        mut provider: super::LogTableDataProvider,
+        mut provider: P,
         provider_name: &str,
     ) -> BenchmarkResult {
         let table_schema = provider.table_schema();
@@ -177,7 +183,7 @@ impl BenchmarkRunner {
             Err(e) => return result.error(format!("Failed to create bulk writer: {e:?}")),
         };
 
-        println!("Starting benchmark: {provider_name}");
+        println!("Starting bulk API benchmark: {provider_name}");
         println!(
             "Table: {} ({} columns)",
             table_name,
@@ -207,7 +213,12 @@ impl BenchmarkRunner {
                 }
             }
 
-            rows_written += rows_buf.len();
+            let len = rows_buf.len();
+            if len == 0 {
+                break;
+            }
+
+            rows_written += len;
             batch_count += 1;
 
             let _request_id = bulk_writer.write_rows_async(rows_buf).await.unwrap();
@@ -251,7 +262,7 @@ impl BenchmarkRunner {
         }
 
         let duration = start_time.elapsed();
-        println!("Benchmark completed successfully!");
+        println!("Bulk API benchmark completed successfully!");
         println!("Final Results:");
         println!("  • Total rows: {rows_written}");
         println!("  • Total batches: {batch_count}");
@@ -295,7 +306,7 @@ impl BenchmarkRunner {
 
     /// Display system information
     pub fn display_system_info(&self) {
-        println!("=== Benchmark Configuration ===");
+        println!("=== Bulk API Benchmark Configuration ===");
         println!("Endpoint: {}", self.config.endpoint);
         println!("Database: {}", self.config.dbname);
         println!("Max rows per provider: {}", self.config.table_row_count);
@@ -323,7 +334,7 @@ impl BenchmarkRunner {
 }
 
 /// Compare multiple benchmark results
-pub fn compare_benchmark_results(results: &[BenchmarkResult]) {
+pub fn show_benchmark_results(results: &[BenchmarkResult]) {
     if results.is_empty() {
         return;
     }
@@ -333,7 +344,7 @@ pub fn compare_benchmark_results(results: &[BenchmarkResult]) {
     let successful_results: Vec<_> = results.iter().filter(|r| r.success).collect();
 
     if successful_results.is_empty() {
-        println!("No successful benchmarks to compare");
+        println!("No successful benchmarks to display");
         return;
     }
 
@@ -390,5 +401,184 @@ pub fn compare_benchmark_results(results: &[BenchmarkResult]) {
                 );
             }
         }
+    }
+}
+
+/// Regular API Benchmark Runner
+/// Uses Database::insert() API for performance testing
+#[allow(dead_code)] // May be unused depending on which examples are being compiled
+pub struct RegularApiBenchmarkRunner {
+    config: BenchmarkConfig,
+}
+
+#[allow(dead_code)] // May be unused depending on which examples are being compiled
+impl RegularApiBenchmarkRunner {
+    pub fn new(config: BenchmarkConfig) -> Self {
+        Self { config }
+    }
+
+    /// Run regular API benchmark using a provider that implements ApiDataProvider
+    pub async fn run_regular_api_benchmark<P: ApiDataProvider>(
+        &self,
+        mut provider: P,
+        provider_name: &str,
+    ) -> BenchmarkResult {
+        let table_name = provider.table_name().to_string();
+        let total_rows = provider.row_count();
+
+        let result = BenchmarkResult::new(provider_name, &table_name, total_rows);
+
+        // Initialize provider
+        if let Err(e) = provider.init() {
+            return result.error(format!("Failed to initialize provider: {e:?}"));
+        }
+
+        // Create client and database
+        let client = match self.create_client().await {
+            Ok(client) => client,
+            Err(e) => return result.error(format!("Failed to create client: {e:?}")),
+        };
+
+        let database = Database::new_with_dbname(&self.config.dbname, client);
+        let column_schema = provider.api_schema();
+
+        println!("Starting regular API benchmark: {provider_name}");
+        println!("Table: {} ({} columns)", table_name, column_schema.len());
+        println!("Target rows: {total_rows}");
+        println!("Batch size: {}", self.config.batch_size);
+        println!();
+
+        let start_time = Instant::now();
+        let mut rows_written = 0;
+        let mut batch_count = 0;
+        let mut total_latency = Duration::new(0, 0);
+
+        // Use regular API to insert data in batches
+        let mut row_iter = provider.api_rows();
+        let mut batch_rows = Vec::new();
+
+        loop {
+            // Collect batch from row iterator
+            batch_rows.clear();
+            let mut batch_complete = false;
+
+            for _ in 0..self.config.batch_size {
+                if let Some(api_row) = row_iter.next() {
+                    batch_rows.push(api_row);
+                } else {
+                    batch_complete = true;
+                    break;
+                }
+            }
+
+            if batch_rows.is_empty() {
+                break;
+            }
+
+            // Create insert request
+            let insert_request = RowInsertRequests {
+                inserts: vec![RowInsertRequest {
+                    table_name: table_name.to_string(),
+                    rows: Some(ApiRows {
+                        schema: column_schema.clone(),
+                        rows: batch_rows.clone(),
+                    }),
+                }],
+            };
+
+            // Measure latency for this batch
+            let batch_start = Instant::now();
+
+            match database.insert(insert_request).await {
+                Ok(affected_rows) => {
+                    let batch_latency = batch_start.elapsed();
+                    total_latency += batch_latency;
+                    rows_written += batch_rows.len();
+                    batch_count += 1;
+
+                    let elapsed = start_time.elapsed();
+                    let rate = rows_written as f64 / elapsed.as_secs_f64();
+                    println!(
+                        "→ Batch {}: {} rows processed, {} affected ({:.0} rows/sec, {:.2}ms latency)",
+                        batch_count,
+                        batch_rows.len(),
+                        affected_rows,
+                        rate,
+                        batch_latency.as_secs_f64() * 1000.0
+                    );
+                }
+                Err(e) => {
+                    return result.error(format!("Failed to insert batch {batch_count}: {e:?}"));
+                }
+            }
+
+            if batch_complete {
+                break;
+            }
+        }
+
+        let duration = start_time.elapsed();
+        let avg_latency = if batch_count > 0 {
+            total_latency.as_secs_f64() * 1000.0 / batch_count as f64
+        } else {
+            0.0
+        };
+
+        println!("Regular API benchmark completed successfully!");
+        println!("Final Results:");
+        println!("  • Total rows: {rows_written}");
+        println!("  • Total batches: {batch_count}");
+        println!("  • Duration: {:.2}s", duration.as_secs_f64());
+        println!(
+            "  • Throughput: {:.0} rows/sec",
+            rows_written as f64 / duration.as_secs_f64()
+        );
+        println!("  • Average latency: {avg_latency:.2}ms");
+        println!();
+
+        // Drop the iterator to release the mutable borrow
+        drop(row_iter);
+
+        // Cleanup provider
+        if let Err(e) = provider.close() {
+            return result.error(format!("Failed to close provider: {e:?}"));
+        }
+
+        result.success(duration.as_millis() as u64)
+    }
+
+    /// Create GreptimeDB client
+    async fn create_client(&self) -> Result<greptimedb_ingester::client::Client> {
+        let client =
+            greptimedb_ingester::client::Client::with_urls(&[self.config.endpoint.clone()]);
+        Ok(client)
+    }
+
+    /// Display system information
+    pub fn display_system_info(&self) {
+        println!("=== Regular API Benchmark Configuration ===");
+        println!("Endpoint: {}", self.config.endpoint);
+        println!("Database: {}", self.config.dbname);
+        println!("Max rows per provider: {}", self.config.table_row_count);
+        println!("Batch size: {}", self.config.batch_size);
+        println!("Parallelism: {}", self.config.parallelism);
+        println!("Compression: {}", self.config.compression);
+
+        if let Ok(hostname) = std::env::var("HOSTNAME") {
+            println!("Hostname: {hostname}");
+        }
+
+        let cpu_count = num_cpus::get();
+        println!("CPU cores: {cpu_count}");
+
+        println!(
+            "Build profile: {}",
+            if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            }
+        );
+        println!();
     }
 }

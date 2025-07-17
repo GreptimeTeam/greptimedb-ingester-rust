@@ -17,10 +17,14 @@
 //! Generates synthetic log data following the Java LogTableDataProvider pattern,
 //! with 22 columns including timestamps, log entries, and hierarchical identifiers.
 
-use crate::bench::LogTextHelper;
+use crate::bench::log_text_helper::LogTextHelper;
 
 use super::benchmark_runner::BenchmarkConfig;
-use super::table_data_provider::TableDataProvider;
+use super::table_data_provider::{ApiDataProvider, DataProvider, TableDataProvider};
+use greptimedb_ingester::api::v1::{
+    ColumnDataType as ApiColumnDataType, ColumnSchema, Row as ApiRow, SemanticType,
+};
+use greptimedb_ingester::helpers::values::*;
 use greptimedb_ingester::{ColumnDataType, Row, TableSchema, Value};
 use rand::RngCore;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -263,6 +267,75 @@ impl LogTableDataProvider {
             Value::String("v1.0.0".to_string()),
         ]))
     }
+
+    /// Generate a single api::v1::Row for regular API
+    fn generate_api_row(&mut self) -> Option<ApiRow> {
+        if self.current_row >= self.row_count {
+            return None;
+        }
+
+        // Use the same deterministic generation logic as bulk API
+        let pool_len = self.host_ids.len();
+        let base_idx = self.current_row % pool_len;
+
+        // Use current row + small random offset for deterministic yet varied data
+        let random_offset = (self.current_row * 7 + 13) % pool_len; // Simple pseudo-random
+        let timestamp =
+            self.base_time + self.current_row as i64 + (random_offset as i64 % 2000) - 1000;
+
+        // Use pre-generated values with minimal cloning by accessing directly
+        let log_uid = &self.log_uids[base_idx];
+
+        // Get pre-generated log entry with circular access
+        let log_entry_idx = self.current_row % self.log_entries.len();
+        let (log_level, log_message) = &self.log_entries[log_entry_idx];
+
+        // Use offset indices for variety without modulo operations
+        let idx1 = base_idx;
+        let idx2 = (base_idx + 1) % pool_len;
+        let idx3 = (base_idx + 2) % pool_len;
+        let idx4 = (base_idx + 3) % pool_len;
+        let idx5 = (base_idx + 4) % pool_len;
+
+        let response_time_ms = ((base_idx % 999) + 1) as i64;
+
+        // Create api::v1::Row with values in the same order as schema
+        let api_row = ApiRow {
+            values: vec![
+                timestamp_millisecond_value(timestamp),
+                string_value(log_uid.clone()),
+                string_value(log_message.clone()),
+                string_value(log_level.clone()),
+                string_value(self.host_ids[idx1].clone()),
+                string_value(self.host_names[idx1].clone()),
+                string_value(self.service_ids[idx2].clone()),
+                string_value(self.service_names[idx2].clone()),
+                string_value(self.container_ids[idx3].clone()),
+                string_value(self.container_names[idx3].clone()),
+                string_value(self.pod_ids[idx4].clone()),
+                string_value(self.pod_names[idx4].clone()),
+                string_value(self.cluster_ids[idx5].clone()),
+                string_value(self.cluster_names[idx5].clone()),
+                string_value(self.trace_ids[idx1].clone()),
+                string_value(self.span_ids[idx2].clone()),
+                string_value(self.user_ids[idx3].clone()),
+                string_value(self.session_ids[idx4].clone()),
+                string_value(self.request_ids[idx5].clone()),
+                i64_value(response_time_ms),
+                string_value("application".to_string()),
+                string_value("v1.0.0".to_string()),
+            ],
+        };
+
+        self.current_row += 1;
+        Some(api_row)
+    }
+}
+
+impl DataProvider for LogTableDataProvider {
+    fn row_count(&self) -> usize {
+        self.row_count
+    }
 }
 
 impl TableDataProvider for LogTableDataProvider {
@@ -298,9 +371,180 @@ impl TableDataProvider for LogTableDataProvider {
     fn rows(&mut self) -> Box<dyn Iterator<Item = Row> + '_> {
         Box::new(LogRowIterator { provider: self })
     }
+}
 
-    fn row_count(&self) -> usize {
-        self.row_count
+impl ApiDataProvider for LogTableDataProvider {
+    fn table_name(&self) -> &str {
+        &self.table_name
+    }
+
+    fn api_schema(&self) -> Vec<ColumnSchema> {
+        vec![
+            ColumnSchema {
+                column_name: "ts".to_string(),
+                datatype: ApiColumnDataType::TimestampMillisecond as i32,
+                semantic_type: SemanticType::Timestamp as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "log_uid".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "log_message".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "log_level".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "host_id".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "host_name".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                datatype_extension: None,
+                options: None,
+            },
+            ColumnSchema {
+                column_name: "service_id".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "service_name".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "container_id".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "container_name".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "pod_id".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "pod_name".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "cluster_id".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "cluster_name".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "trace_id".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "span_id".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "user_id".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "session_id".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "request_id".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "response_time_ms".to_string(),
+                datatype: ApiColumnDataType::Int64 as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "log_source".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+            ColumnSchema {
+                column_name: "version".to_string(),
+                datatype: ApiColumnDataType::String as i32,
+                semantic_type: SemanticType::Field as i32,
+                ..Default::default()
+            },
+        ]
+    }
+
+    fn api_rows(&mut self) -> Box<dyn Iterator<Item = ApiRow> + '_> {
+        Box::new(ApiRowIterator {
+            provider: self,
+            current_row: 0,
+        })
+    }
+}
+
+/// Iterator for api::v1::Row (Regular API)
+pub struct ApiRowIterator<'a> {
+    provider: &'a mut LogTableDataProvider,
+    current_row: usize,
+}
+
+impl<'a> Iterator for ApiRowIterator<'a> {
+    type Item = ApiRow;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Save the current state and restore provider's state
+        let saved_current = self.provider.current_row;
+        self.provider.current_row = self.current_row;
+
+        let result = self.provider.generate_api_row();
+
+        // Update our iterator state and restore provider state
+        self.current_row = self.provider.current_row;
+        self.provider.current_row = saved_current;
+
+        result
     }
 }
 
