@@ -63,10 +63,10 @@ WITH(
 
 #### Medium Cardinality Fields (~100K values)
 - **`host_id/host_name`**: Format `host-{0-99999}` with Greek letter naming patterns
-- **`service_id/service_name`**: Similar to host pattern
-- **`container_id/container_name`**: Container identifier pairs
-- **`pod_id/pod_name`**: Pod identifier pairs
-- **`cluster_id/cluster_name`**: Cluster identifier pairs
+- **`service_id/service_name`**: Format `service-{0-99999}` with Greek letter naming patterns
+- **`container_id/container_name`**: Format `container-{0-99999}` with Greek letter naming patterns
+- **`pod_id/pod_name`**: Format `pod-{0-99999}` with Greek letter naming patterns
+- **`cluster_id/cluster_name`**: Format `cluster-{0-99999}` with Greek letter naming patterns
 
 #### Low Cardinality Fields
 - **`user_id`**: Range 1-9999, simulating 9,999 users
@@ -89,7 +89,6 @@ WITH(
 #### Pre-generated Value Pools
 - **Pool Size**: Maximum 10,000 values or 2x row count (whichever is smaller)
 - **Content**: All field values are pre-generated and stored in memory
-- **Access Pattern**: Cyclic access through indexing to avoid runtime generation
 
 #### Deterministic Randomization
 - **Algorithm**: Uses `(current_row * 7 + 13) % pool_len` for offset generation
@@ -132,9 +131,9 @@ WITH(
 
 ## Data Simulation Features
 
-### Hierarchical Infrastructure Modeling
-The data model simulates containerized deployment hierarchies:
-- **Host** → **Service** → **Container** → **Pod** → **Cluster**
+### Infrastructure Field Generation
+The data model includes infrastructure-related fields for realistic log data simulation:
+- **Host**, **Service**, **Container**, **Pod**, **Cluster** identifiers and names
 
 ### Distributed Tracing Simulation
 - **Trace/Span IDs**: High cardinality values simulating distributed request flows
@@ -148,7 +147,6 @@ The data model simulates containerized deployment hierarchies:
 
 ### Data Relationships
 - **Temporal Correlation**: Timestamps generally increase, simulating real-time log streams
-- **Infrastructure Hierarchy**: Reflects containerized deployment relationships
 - **Trace Correlation**: trace_id and span_id simulate distributed system call chains
 
 ## Usage Examples
