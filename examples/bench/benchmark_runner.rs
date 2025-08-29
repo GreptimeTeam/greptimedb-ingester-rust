@@ -282,8 +282,9 @@ impl BulkApiBenchmarkRunner {
 
     /// Create GreptimeDB client
     async fn create_client(&self) -> Result<greptimedb_ingester::client::Client> {
-        let client =
-            greptimedb_ingester::client::Client::with_urls(&[self.config.endpoint.clone()]);
+        let client = greptimedb_ingester::client::Client::with_urls(std::slice::from_ref(
+            &self.config.endpoint,
+        ));
         Ok(client)
     }
 
@@ -553,8 +554,9 @@ impl RegularApiBenchmarkRunner {
 
     /// Create GreptimeDB client
     async fn create_client(&self) -> Result<greptimedb_ingester::client::Client> {
-        let client =
-            greptimedb_ingester::client::Client::with_urls(&[self.config.endpoint.clone()]);
+        let client = greptimedb_ingester::client::Client::with_urls(std::slice::from_ref(
+            &self.config.endpoint,
+        ));
         Ok(client)
     }
 
