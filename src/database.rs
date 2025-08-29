@@ -130,7 +130,8 @@ impl Database {
             auth_scheme: Some(AuthScheme::Basic(Basic { username, password })),
         }) = &self.auth_header
         {
-            let encoded = BASE64_STANDARD.encode(format!("{username}:{password}"));
+            let auth_str = format!("Basic {username}:{password}");
+            let encoded = BASE64_STANDARD.encode(auth_str);
             let value =
                 MetadataValue::from_str(&encoded).context(error::InvalidTonicMetadataValueSnafu)?;
             request.metadata_mut().insert("x-greptime-auth", value);
