@@ -457,7 +457,7 @@ impl Pool {
         })
     }
 
-    fn entry(&self, addr: String) -> Entry<String, Channel> {
+    fn entry(&self, addr: String) -> Entry<'_, String, Channel> {
         self.channels.entry(addr)
     }
 

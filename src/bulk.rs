@@ -415,7 +415,7 @@ impl BulkStreamWriter {
     /// Returns a `RowBuilder` that can efficiently build rows for this writer
     /// Uses O(1) field name lookup for optimal performance
     #[must_use]
-    pub fn new_row(&self) -> RowBuilder {
+    pub fn new_row(&self) -> RowBuilder<'_> {
         RowBuilder::new(self.column_schemas(), &self.field_map)
     }
 
