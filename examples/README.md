@@ -25,6 +25,24 @@ cargo run --example insert_example
 ### `bulk_stream_writer_example.rs` - High-Throughput Bulk API
 **Best for**: ETL operations, data migration, batch processing, log ingestion
 
+> [!IMPORTANT]
+> Bulk API requires manual table creation.
+> ```
+> CREATE TABLE high_throughput_sequential (
+>     ts TIMESTAMP TIME INDEX,
+>     sensor_id STRING,
+>     temperature DOUBLE,
+>     sensor_status BIGINT
+>  );
+>
+>  CREATE TABLE high_throughput_parallel (
+>      ts TIMESTAMP TIME INDEX,
+>      sensor_id STRING,
+>      temperature DOUBLE,
+>      sensor_status BIGINT
+>  );
+>  ```
+
 ```bash
 cargo run --example bulk_stream_writer_example
 ```
@@ -43,16 +61,20 @@ cargo run --example bulk_stream_writer_example
 - **Important**: Bulk API requires manual table creation (does not auto-create tables)
 - Current limitation: bulk operations work only with field columns (tag support coming)
 
+### `bulk_api_log_benchmark.rs` and `bulk_stream_writer_example.rs` - Benchmarks
+
+See also [GreptimeDB Benchmark Utilities](./bench/README.md)
+
 ## Choosing the Right Example
 
-| Scenario | Example | Why |
-|----------|---------|-----|
-| **IoT sensor data** | `insert_example.rs` | Real-time requirements, small batches |
-| **Interactive dashboards** | `insert_example.rs` | User expects immediate feedback |
-| **ETL pipelines** | `bulk_stream_writer_example.rs` | Process millions of records efficiently |
-| **Log ingestion** | `bulk_stream_writer_example.rs` | High volume, can batch data |
-| **Data migration** | `bulk_stream_writer_example.rs` | Transfer large datasets quickly |
-| **Real-time alerts** | `insert_example.rs` | Immediate processing required |
+| Scenario                   | Example                         | Why                                     |
+|----------------------------|---------------------------------|-----------------------------------------|
+| **IoT sensor data**        | `insert_example.rs`             | Real-time requirements, small batches   |
+| **Interactive dashboards** | `insert_example.rs`             | User expects immediate feedback         |
+| **ETL pipelines**          | `bulk_stream_writer_example.rs` | Process millions of records efficiently |
+| **Log ingestion**          | `bulk_stream_writer_example.rs` | High volume, can batch data             |
+| **Data migration**         | `bulk_stream_writer_example.rs` | Transfer large datasets quickly         |
+| **Real-time alerts**       | `insert_example.rs`             | Immediate processing required           |
 
 ## Configuration
 
@@ -188,14 +210,7 @@ Use these metrics to:
 **Manual Table Creation Required**: Unlike the insert API which can automatically create tables, the bulk API requires tables to exist beforehand. In production, you should:
 
 1. **Create tables manually using SQL DDL**:
-   ```sql
-   CREATE TABLE sensor_readings (
-       ts TIMESTAMP TIME INDEX,
-       sensor_id STRING,
-       temperature DOUBLE,
-       sensor_status BIGINT
-   );
-   ```
+   Refer to the content in the prompt block in the previous article.
 
 2. **Or use insert API first** (as shown in examples):
    ```rust
