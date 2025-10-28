@@ -22,6 +22,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use greptime_proto::v1::auth_header::AuthScheme;
 use greptime_proto::v1::SemanticType;
 use tokio::select;
 use tokio::time::timeout;
@@ -71,7 +72,7 @@ where
 pub type RequestId = i64;
 
 /// High-level bulk inserter for `GreptimeDB`
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BulkInserter {
     database: Database,
 }
@@ -83,6 +84,10 @@ impl BulkInserter {
         Self {
             database: Database::new_with_dbname(database_name, client),
         }
+    }
+
+    pub fn set_auth(&mut self, auth: AuthScheme) {
+        self.database.set_auth(auth);
     }
 
     /// Create a bulk stream writer from a table template
