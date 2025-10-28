@@ -24,12 +24,17 @@ use greptimedb_ingester::{
     BulkInserter, BulkWriteOptions, CompressionType, Result,
 };
 use std::time::{Duration, Instant};
+use std::fs;
+use std::io;
+use serde::Deserialize;
 
 /// Configuration for benchmark runs
 #[derive(Debug, Clone)]
 pub struct BenchmarkConfig {
     pub endpoint: String,
     pub dbname: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
     pub table_row_count: usize,
     pub batch_size: usize,
     pub parallelism: usize,
@@ -41,6 +46,8 @@ impl Default for BenchmarkConfig {
         Self {
             endpoint: "localhost:4001".to_string(),
             dbname: "public".to_string(),
+            username: None,
+            password: None,
             table_row_count: 1_000_000,
             batch_size: 64 * 1024,
             parallelism: 4,
@@ -49,27 +56,74 @@ impl Default for BenchmarkConfig {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct ConfigFile {
+    database: Option<DatabaseConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DatabaseConfig {
+    endpoints: Option<Vec<String>>,
+    dbname: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+}
+
 impl BenchmarkConfig {
     /// Create configuration from environment variables
     pub fn from_env() -> Self {
+        let file_config = Self::from_file().unwrap_or_default();
+
         Self {
-            endpoint: std::env::var("GREPTIME_ENDPOINT")
-                .unwrap_or_else(|_| "localhost:4001".to_string()),
-            dbname: std::env::var("GREPTIMEDB_DBNAME").unwrap_or_else(|_| "public".to_string()),
+            endpoint: std::env::var("GREPTIME_ENDPOINT").unwrap_or(file_config.endpoint),
+            dbname: std::env::var("GREPTIMEDB_DBNAME").unwrap_or(file_config.dbname),
+            username: std::env::var("GREPTIMEDB_USERNAME").ok().or(file_config.username),
+            password: std::env::var("GREPTIMEDB_PASSWORD").ok().or(file_config.password),
             table_row_count: std::env::var("TABLE_ROW_COUNT")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(2_000_000),
+                .unwrap_or(file_config.table_row_count),
             batch_size: std::env::var("BATCH_SIZE")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(100_000),
+                .unwrap_or(file_config.batch_size),
             parallelism: std::env::var("PARALLELISM")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(8),
-            compression: std::env::var("COMPRESSION").unwrap_or_else(|_| "lz4".to_string()),
+                .unwrap_or(file_config.parallelism),
+            compression: std::env::var("COMPRESSION").unwrap_or(file_config.compression),
         }
+    }
+
+    pub fn from_file() -> io::Result<Self> {
+        Self::from_file_path("examples/db-connection.toml")
+    }
+
+    pub fn from_file_path(path: &str) -> io::Result<Self> {
+        let content = fs::read_to_string(path)?;
+        let config_file: ConfigFile = toml::from_str(&content)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+        let mut config = BenchmarkConfig::default();
+
+        if let Some(db_config) = config_file.database {
+            if let Some(endpoints) = db_config.endpoints {
+                if let Some(endpoint) = endpoints.first() {
+                    config.endpoint = endpoint.clone();
+                }
+            }
+            if let Some(dbname) = db_config.dbname {
+                config.dbname = dbname;
+            }
+            if let Some(username) = db_config.username {
+                config.username = Some(username);
+            }
+            if let Some(password) = db_config.password {
+                config.password = Some(password);
+            }
+        }
+
+        Ok(config)
     }
 }
 
@@ -171,7 +225,14 @@ impl BulkApiBenchmarkRunner {
             Err(e) => return result.error(format!("Failed to create client: {e:?}")),
         };
 
-        let bulk_inserter = BulkInserter::new(client, &self.config.dbname);
+        let mut bulk_inserter = BulkInserter::new(client, &self.config.dbname);
+
+        if let (Some(username), Some(password)) = (self.config.username.clone(), self.config.password.clone()) {
+            bulk_inserter.set_auth(greptimedb_ingester::api::v1::auth_header::AuthScheme::Basic(greptimedb_ingester::api::v1::Basic {
+                username,
+                password,
+            }));
+        }
 
         // Create bulk stream writer
         println!("Setting up bulk stream writer...");
@@ -314,6 +375,9 @@ impl BulkApiBenchmarkRunner {
         println!("=== Bulk API Benchmark Configuration ===");
         println!("Endpoint: {}", self.config.endpoint);
         println!("Database: {}", self.config.dbname);
+        if let Some(username) = &self.config.username {
+            println!("Username: {}", username);
+        }
         println!("Max rows per provider: {}", self.config.table_row_count);
         println!("Batch size: {}", self.config.batch_size);
         println!("Parallelism: {}", self.config.parallelism);
@@ -444,7 +508,13 @@ impl RegularApiBenchmarkRunner {
             Err(e) => return result.error(format!("Failed to create client: {e:?}")),
         };
 
-        let database = Database::new_with_dbname(&self.config.dbname, client);
+        let mut database = Database::new_with_dbname(&self.config.dbname, client);
+        if let (Some(username), Some(password)) = (self.config.username.clone(), self.config.password.clone()) {
+            database.set_auth(greptimedb_ingester::api::v1::auth_header::AuthScheme::Basic(greptimedb_ingester::api::v1::Basic {
+                username,
+                password,
+            }));
+        }
         let column_schema = provider.api_schema();
 
         println!("Starting regular API benchmark: {provider_name}");
@@ -565,6 +635,9 @@ impl RegularApiBenchmarkRunner {
         println!("=== Regular API Benchmark Configuration ===");
         println!("Endpoint: {}", self.config.endpoint);
         println!("Database: {}", self.config.dbname);
+        if let Some(username) = &self.config.username {
+            println!("Username: {}", username);
+        }
         println!("Max rows per provider: {}", self.config.table_row_count);
         println!("Batch size: {}", self.config.batch_size);
         println!("Parallelism: {}", self.config.parallelism);
