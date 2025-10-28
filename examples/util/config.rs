@@ -19,12 +19,15 @@
 
 use std::fs;
 use std::io;
+use serde::Deserialize;
 
 /// Database connection configuration
 #[derive(Debug, Clone)]
 pub struct DbConfig {
     pub endpoint: String,
     pub dbname: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
 }
 
 impl Default for DbConfig {
@@ -32,8 +35,23 @@ impl Default for DbConfig {
         Self {
             endpoint: "localhost:4001".to_string(),
             dbname: "public".to_string(),
+            username: None,
+            password: None,
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfigFile {
+    database: Option<DatabaseConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DatabaseConfig {
+    endpoints: Option<Vec<String>>,
+    dbname: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
 }
 
 impl DbConfig {
@@ -42,11 +60,22 @@ impl DbConfig {
     /// Environment variables:
     /// - `GREPTIMEDB_ENDPOINT`: Database endpoint (default: localhost:4001)
     /// - `GREPTIMEDB_DBNAME`: Database name (default: public)
+    /// - `GREPTIMEDB_USERNAME`: Username for authentication
+    /// - `GREPTIMEDB_PASSWORD`: Password for authentication
     pub fn from_env() -> Self {
-        let config = Self::from_file().unwrap_or_default();
+        let file_config = Self::from_file().unwrap_or_default();
+
         Self {
-            endpoint: std::env::var("GREPTIMEDB_ENDPOINT").unwrap_or(config.endpoint),
-            dbname: std::env::var("GREPTIMEDB_DBNAME").unwrap_or(config.dbname),
+            endpoint: std::env::var("GREPTIMEDB_ENDPOINT")
+                .unwrap_or(file_config.endpoint),
+            dbname: std::env::var("GREPTIMEDB_DBNAME")
+                .unwrap_or(file_config.dbname),
+            username: std::env::var("GREPTIMEDB_USERNAME")
+                .ok()
+                .or(file_config.username),
+            password: std::env::var("GREPTIMEDB_PASSWORD")
+                .ok()
+                .or(file_config.password),
         }
     }
 
@@ -54,8 +83,11 @@ impl DbConfig {
     ///
     /// Expected file format:
     /// ```toml
+    /// [database]
     /// endpoints = ["127.0.0.1:4001"]
     /// dbname = "public"
+    /// username = "user"
+    /// password = "pass"
     /// ```
     pub fn from_file() -> io::Result<Self> {
         Self::from_file_path("examples/db-connection.toml")
@@ -64,42 +96,40 @@ impl DbConfig {
     /// Load configuration from a specific file path
     pub fn from_file_path(path: &str) -> io::Result<Self> {
         let content = fs::read_to_string(path)?;
-        let mut endpoint = String::new();
-        let mut database = String::new();
+        let config_file: ConfigFile = toml::from_str(&content)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-        for line in content.lines() {
-            let line = line.trim();
-            if line.starts_with("endpoints") {
-                endpoint = line
-                    .split('=')
-                    .nth(1)
-                    .and_then(|s| {
-                        s.trim()
-                            .trim_matches(&['[', ']', '"'][..])
-                            .split(',')
-                            .next()
-                    })
-                    .unwrap_or("127.0.0.1:4001")
-                    .to_string();
-            } else if line.starts_with("dbname") {
-                database = line
-                    .split('=')
-                    .nth(1)
-                    .map(|s| s.trim().trim_matches('"'))
-                    .unwrap_or("public")
-                    .to_string();
+        let mut config = DbConfig::default();
+
+        if let Some(db_config) = config_file.database {
+            if let Some(endpoints) = db_config.endpoints {
+                if let Some(endpoint) = endpoints.first() {
+                    config.endpoint = endpoint.clone();
+                }
+            }
+            if let Some(dbname) = db_config.dbname {
+                config.dbname = dbname;
+            }
+            if let Some(username) = db_config.username {
+                config.username = Some(username.clone());
+            }
+            if let Some(password) = db_config.password {
+                config.password = Some(password.clone());
             }
         }
 
-        Ok(Self {
-            endpoint,
-            dbname: database,
-        })
+        Ok(config)
     }
 
     /// Display current configuration
     pub fn display(&self) {
         println!("Using GreptimeDB endpoint: {}", self.endpoint);
         println!("Using dbname: {}", self.dbname);
+        if let Some(username) = &self.username {
+            println!("Using username: {}", username);
+        }
+        if let Some(password) = &self.password {
+            println!("Using password: {}", password);
+        }
     }
 }

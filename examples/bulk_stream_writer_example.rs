@@ -22,11 +22,14 @@ use util::DbConfig;
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use greptimedb_ingester::api::v1::Basic;
 use greptimedb_ingester::client::Client;
 use greptimedb_ingester::{
     BulkInserter, BulkStreamWriter, BulkWriteOptions, Column, ColumnDataType, CompressionType,
     Result, Row, Rows, TableSchema, Value,
 };
+
+use greptime_proto::v1::auth_header::AuthScheme;
 
 /// Generate test data using the optimized schema-bound buffer API
 /// This method provides the best performance by reusing the writer's cached schema
@@ -139,7 +142,14 @@ async fn run_sequential_writes() -> Result<Duration> {
     let config = DbConfig::from_env();
     let urls = vec![config.endpoint.clone()];
     let grpc_client = Client::with_urls(&urls);
-    let bulk_inserter = BulkInserter::new(grpc_client, &config.dbname);
+    let mut bulk_inserter = BulkInserter::new(grpc_client, &config.dbname);
+
+    if let (Some(username), Some(password)) = (config.username.clone(), config.password.clone()) {
+        bulk_inserter.set_auth(AuthScheme::Basic(Basic {
+            username,
+            password,
+        }));
+    }
 
     config.display();
     println!();
@@ -222,7 +232,14 @@ async fn run_parallel_writes() -> Result<Duration> {
     let config = DbConfig::from_env();
     let urls = vec![config.endpoint.clone()];
     let grpc_client = Client::with_urls(&urls);
-    let bulk_inserter = BulkInserter::new(grpc_client, &config.dbname);
+    let mut bulk_inserter = BulkInserter::new(grpc_client, &config.dbname);
+
+    if let (Some(username), Some(password)) = (config.username.clone(), config.password.clone()) {
+        bulk_inserter.set_auth(AuthScheme::Basic(Basic {
+            username,
+            password,
+        }));
+    }
 
     config.display();
     println!();

@@ -34,6 +34,7 @@ tokio-util = { version = "0.7", features = ["io-util", "compat"] }
 tonic = { version = "0.12", features = ["tls", "gzip", "zstd"] }
 tower = "0.5"
 derive_builder = "0.20"
+toml = "0.9.8"
 
 [build-dependencies]
 tonic-build = "0.11"

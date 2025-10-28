@@ -25,6 +25,8 @@ use greptimedb_ingester::helpers::schema::*;
 use greptimedb_ingester::helpers::values::*;
 use greptimedb_ingester::{database::Database, Result};
 
+use greptime_proto::v1::auth_header::AuthScheme;
+
 /// Example of real-time sensor data insertion using low-level API
 /// Best for: Low-latency requirements, small batches, real-time data streaming
 pub async fn realtime_sensor_ingest() -> Result<()> {
@@ -39,7 +41,14 @@ pub async fn realtime_sensor_ingest() -> Result<()> {
     println!();
 
     let grpc_client = Client::with_urls(&urls);
-    let database = Database::new_with_dbname(&config.dbname, grpc_client);
+    let mut database = Database::new_with_dbname(&config.dbname, grpc_client);
+
+    if let (Some(username), Some(password)) = (config.username.clone(), config.password.clone()) {
+        database.set_auth(AuthScheme::Basic(Basic {
+            username,
+            password,
+        }));
+    }
 
     // Simulate real-time data arrival - small batches with immediate processing
     for batch_num in 1..=5 {
@@ -146,7 +155,14 @@ pub async fn data_types_demonstration() -> Result<()> {
     let config = DbConfig::from_env();
     let urls = vec![config.endpoint.clone()];
     let grpc_client = Client::with_urls(&urls);
-    let database = Database::new_with_dbname(&config.dbname, grpc_client);
+    let mut database = Database::new_with_dbname(&config.dbname, grpc_client);
+
+    if let (Some(username), Some(password)) = (config.username.clone(), config.password.clone()) {
+        database.set_auth(AuthScheme::Basic(Basic {
+            username,
+            password,
+        }));
+    }
 
     config.display();
     println!();

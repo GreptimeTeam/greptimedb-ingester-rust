@@ -1,3 +1,5 @@
 [database]
 endpoints = ["127.0.0.1:4001"]
 dbname = "public"
+username = "user"
+password = "pass"
