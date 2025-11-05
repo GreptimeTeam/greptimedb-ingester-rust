@@ -22,12 +22,23 @@ use std::io;
 use serde::Deserialize;
 
 /// Database connection configuration
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DbConfig {
     pub endpoint: String,
     pub dbname: String,
     pub username: Option<String>,
     pub password: Option<String>,
+}
+
+impl std::fmt::Debug for DbConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DbConfig")
+            .field("endpoint", &self.endpoint)
+            .field("dbname", &self.dbname)
+            .field("username", &self.username)
+            .field("password", &"******")
+            .finish()
+    }
 }
 
 impl Default for DbConfig {
@@ -46,12 +57,23 @@ struct ConfigFile {
     database: Option<DatabaseConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct DatabaseConfig {
     endpoints: Option<Vec<String>>,
     dbname: Option<String>,
     username: Option<String>,
     password: Option<String>,
+}
+
+impl std::fmt::Debug for DatabaseConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatabaseConfig")
+            .field("endpoints", &self.endpoints)
+            .field("dbname", &self.dbname)
+            .field("username", &self.username)
+            .field("password", &"******")
+            .finish()
+    }
 }
 
 impl DbConfig {
@@ -128,8 +150,8 @@ impl DbConfig {
         if let Some(username) = &self.username {
             println!("Using username: {}", username);
         }
-        if let Some(password) = &self.password {
-            println!("Using password: {}", password);
+        if self.password.is_some() {
+            println!("Using password: ******");
         }
     }
 }

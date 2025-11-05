@@ -378,6 +378,9 @@ impl BulkApiBenchmarkRunner {
         if let Some(username) = &self.config.username {
             println!("Username: {}", username);
         }
+        if self.config.password.is_some() {
+            println!("Password: {}", "******");
+        }
         println!("Max rows per provider: {}", self.config.table_row_count);
         println!("Batch size: {}", self.config.batch_size);
         println!("Parallelism: {}", self.config.parallelism);
@@ -637,6 +640,9 @@ impl RegularApiBenchmarkRunner {
         println!("Database: {}", self.config.dbname);
         if let Some(username) = &self.config.username {
             println!("Username: {}", username);
+        }
+        if self.config.password.is_some() {
+            println!("Password: {}", "******");
         }
         println!("Max rows per provider: {}", self.config.table_row_count);
         println!("Batch size: {}", self.config.batch_size);

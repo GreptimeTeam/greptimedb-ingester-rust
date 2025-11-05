@@ -41,7 +41,7 @@ type FlightDataStream = Pin<Box<dyn Stream<Item = FlightData> + Send>>;
 type DoPutResponseStream = Pin<Box<dyn Stream<Item = Result<DoPutResponse>>>>;
 
 /// The Client for GreptimeDB Database API.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct Database {
     // The dbname follows naming rule as out mysql, postgres and http
     // protocol. The server treat dbname in priority of catalog/schema.
@@ -49,6 +49,16 @@ pub struct Database {
 
     client: Client,
     auth_header: Option<AuthHeader>,
+}
+
+impl std::fmt::Debug for Database {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Database")
+            .field("dbname", &self.dbname)
+            .field("client", &self.client)
+            .field("auth_header", &"******") // Redact sensitive auth_header
+            .finish()
+    }
 }
 
 pub struct DatabaseClient {
