@@ -44,10 +44,7 @@ pub async fn realtime_sensor_ingest() -> Result<()> {
     let mut database = Database::new_with_dbname(&config.dbname, grpc_client);
 
     if let (Some(username), Some(password)) = (config.username.clone(), config.password.clone()) {
-        database.set_auth(AuthScheme::Basic(Basic {
-            username,
-            password,
-        }));
+        database.set_auth(AuthScheme::Basic(Basic { username, password }));
     }
 
     // Simulate real-time data arrival - small batches with immediate processing
@@ -158,10 +155,7 @@ pub async fn data_types_demonstration() -> Result<()> {
     let mut database = Database::new_with_dbname(&config.dbname, grpc_client);
 
     if let (Some(username), Some(password)) = (config.username.clone(), config.password.clone()) {
-        database.set_auth(AuthScheme::Basic(Basic {
-            username,
-            password,
-        }));
+        database.set_auth(AuthScheme::Basic(Basic { username, password }));
     }
 
     config.display();

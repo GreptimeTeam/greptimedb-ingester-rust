@@ -17,9 +17,9 @@
 //! This module provides utilities for loading GreptimeDB connection configuration
 //! from environment variables and configuration files.
 
+use serde::Deserialize;
 use std::fs;
 use std::io;
-use serde::Deserialize;
 
 /// Database connection configuration
 #[derive(Clone)]
@@ -88,10 +88,8 @@ impl DbConfig {
         let file_config = Self::from_file().unwrap_or_default();
 
         Self {
-            endpoint: std::env::var("GREPTIMEDB_ENDPOINT")
-                .unwrap_or(file_config.endpoint),
-            dbname: std::env::var("GREPTIMEDB_DBNAME")
-                .unwrap_or(file_config.dbname),
+            endpoint: std::env::var("GREPTIMEDB_ENDPOINT").unwrap_or(file_config.endpoint),
+            dbname: std::env::var("GREPTIMEDB_DBNAME").unwrap_or(file_config.dbname),
             username: std::env::var("GREPTIMEDB_USERNAME")
                 .ok()
                 .or(file_config.username),
@@ -148,7 +146,7 @@ impl DbConfig {
         println!("Using GreptimeDB endpoint: {}", self.endpoint);
         println!("Using dbname: {}", self.dbname);
         if let Some(username) = &self.username {
-            println!("Using username: {}", username);
+            println!("Using username: {username}");
         }
         if self.password.is_some() {
             println!("Using password: ******");

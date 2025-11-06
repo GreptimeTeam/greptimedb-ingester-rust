@@ -1531,10 +1531,10 @@ mod tests {
         ];
         let record_batch = {
             let mut sample_rows = Rows::new(&schema_vec, 2, 2).unwrap();
-            let row1 =
-                crate::table::Row::new().add_values(vec![Value::Int32(1), Value::String("hello".to_string())]);
-            let row2 =
-                crate::table::Row::new().add_values(vec![Value::Int32(2), Value::String("world".to_string())]);
+            let row1 = crate::table::Row::new()
+                .add_values(vec![Value::Int32(1), Value::String("hello".to_string())]);
+            let row2 = crate::table::Row::new()
+                .add_values(vec![Value::Int32(2), Value::String("world".to_string())]);
             sample_rows.add_row(row1).unwrap();
             sample_rows.add_row(row2).unwrap();
             RecordBatch::try_from(sample_rows).unwrap()
@@ -1555,8 +1555,8 @@ mod tests {
         assert_eq!(rows_from_batch.len(), 2);
 
         // 4. Ensure adding a new row fails
-        let row_to_add =
-            crate::table::Row::new().add_values(vec![Value::Int32(3), Value::String("new".to_string())]);
+        let row_to_add = crate::table::Row::new()
+            .add_values(vec![Value::Int32(3), Value::String("new".to_string())]);
         let add_result = rows_from_batch.add_row(row_to_add);
         assert!(add_result.is_err());
         assert_eq!(

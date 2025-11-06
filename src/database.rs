@@ -142,8 +142,8 @@ impl Database {
         {
             let encoded = BASE64_STANDARD.encode(format!("{username}:{password}"));
             let auth_str = format!("Basic {encoded}");
-            let value =
-                MetadataValue::from_str(&auth_str).context(error::InvalidTonicMetadataValueSnafu)?;
+            let value = MetadataValue::from_str(&auth_str)
+                .context(error::InvalidTonicMetadataValueSnafu)?;
             request.metadata_mut().insert("x-greptime-auth", value);
         }
 

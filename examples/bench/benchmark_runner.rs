@@ -23,10 +23,10 @@ use greptimedb_ingester::{
     database::Database,
     BulkInserter, BulkWriteOptions, CompressionType, Result,
 };
-use std::time::{Duration, Instant};
+use serde::Deserialize;
 use std::fs;
 use std::io;
-use serde::Deserialize;
+use std::time::{Duration, Instant};
 
 /// Configuration for benchmark runs
 #[derive(Debug, Clone)]
@@ -77,8 +77,12 @@ impl BenchmarkConfig {
         Self {
             endpoint: std::env::var("GREPTIME_ENDPOINT").unwrap_or(file_config.endpoint),
             dbname: std::env::var("GREPTIMEDB_DBNAME").unwrap_or(file_config.dbname),
-            username: std::env::var("GREPTIMEDB_USERNAME").ok().or(file_config.username),
-            password: std::env::var("GREPTIMEDB_PASSWORD").ok().or(file_config.password),
+            username: std::env::var("GREPTIMEDB_USERNAME")
+                .ok()
+                .or(file_config.username),
+            password: std::env::var("GREPTIMEDB_PASSWORD")
+                .ok()
+                .or(file_config.password),
             table_row_count: std::env::var("TABLE_ROW_COUNT")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -227,11 +231,14 @@ impl BulkApiBenchmarkRunner {
 
         let mut bulk_inserter = BulkInserter::new(client, &self.config.dbname);
 
-        if let (Some(username), Some(password)) = (self.config.username.clone(), self.config.password.clone()) {
-            bulk_inserter.set_auth(greptimedb_ingester::api::v1::auth_header::AuthScheme::Basic(greptimedb_ingester::api::v1::Basic {
-                username,
-                password,
-            }));
+        if let (Some(username), Some(password)) =
+            (self.config.username.clone(), self.config.password.clone())
+        {
+            bulk_inserter.set_auth(
+                greptimedb_ingester::api::v1::auth_header::AuthScheme::Basic(
+                    greptimedb_ingester::api::v1::Basic { username, password },
+                ),
+            );
         }
 
         // Create bulk stream writer
@@ -376,10 +383,10 @@ impl BulkApiBenchmarkRunner {
         println!("Endpoint: {}", self.config.endpoint);
         println!("Database: {}", self.config.dbname);
         if let Some(username) = &self.config.username {
-            println!("Username: {}", username);
+            println!("Username: {username}");
         }
         if self.config.password.is_some() {
-            println!("Password: {}", "******");
+            println!("Password: ******");
         }
         println!("Max rows per provider: {}", self.config.table_row_count);
         println!("Batch size: {}", self.config.batch_size);
@@ -512,11 +519,14 @@ impl RegularApiBenchmarkRunner {
         };
 
         let mut database = Database::new_with_dbname(&self.config.dbname, client);
-        if let (Some(username), Some(password)) = (self.config.username.clone(), self.config.password.clone()) {
-            database.set_auth(greptimedb_ingester::api::v1::auth_header::AuthScheme::Basic(greptimedb_ingester::api::v1::Basic {
-                username,
-                password,
-            }));
+        if let (Some(username), Some(password)) =
+            (self.config.username.clone(), self.config.password.clone())
+        {
+            database.set_auth(
+                greptimedb_ingester::api::v1::auth_header::AuthScheme::Basic(
+                    greptimedb_ingester::api::v1::Basic { username, password },
+                ),
+            );
         }
         let column_schema = provider.api_schema();
 
@@ -639,10 +649,10 @@ impl RegularApiBenchmarkRunner {
         println!("Endpoint: {}", self.config.endpoint);
         println!("Database: {}", self.config.dbname);
         if let Some(username) = &self.config.username {
-            println!("Username: {}", username);
+            println!("Username: {username}");
         }
         if self.config.password.is_some() {
-            println!("Password: {}", "******");
+            println!("Password: ******");
         }
         println!("Max rows per provider: {}", self.config.table_row_count);
         println!("Batch size: {}", self.config.batch_size);

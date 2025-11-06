@@ -145,10 +145,7 @@ async fn run_sequential_writes() -> Result<Duration> {
     let mut bulk_inserter = BulkInserter::new(grpc_client, &config.dbname);
 
     if let (Some(username), Some(password)) = (config.username.clone(), config.password.clone()) {
-        bulk_inserter.set_auth(AuthScheme::Basic(Basic {
-            username,
-            password,
-        }));
+        bulk_inserter.set_auth(AuthScheme::Basic(Basic { username, password }));
     }
 
     config.display();
@@ -235,10 +232,7 @@ async fn run_parallel_writes() -> Result<Duration> {
     let mut bulk_inserter = BulkInserter::new(grpc_client, &config.dbname);
 
     if let (Some(username), Some(password)) = (config.username.clone(), config.password.clone()) {
-        bulk_inserter.set_auth(AuthScheme::Basic(Basic {
-            username,
-            password,
-        }));
+        bulk_inserter.set_auth(AuthScheme::Basic(Basic { username, password }));
     }
 
     config.display();
