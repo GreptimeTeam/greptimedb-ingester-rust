@@ -44,7 +44,7 @@ fn create_test_rows_optimized(
         .as_millis() as i64;
 
     // Use the writer's optimized buffer allocation - this shares the Arc<Schema>
-    let mut rows = writer.alloc_rows_buffer(rows_per_batch, 1024)?;
+    let mut rows = writer.alloc_rows_buffer(rows_per_batch)?;
 
     for i in 0..rows_per_batch {
         let global_idx = batch_id * rows_per_batch + i;
@@ -78,7 +78,7 @@ fn create_test_rows_safe(
         .unwrap()
         .as_millis() as i64;
 
-    let mut rows = writer.alloc_rows_buffer(rows_per_batch, 1024)?;
+    let mut rows = writer.alloc_rows_buffer(rows_per_batch)?;
 
     for i in 0..rows_per_batch {
         let global_idx = batch_id * rows_per_batch + i;
@@ -114,7 +114,7 @@ fn create_test_rows(
         .unwrap()
         .as_millis() as i64;
 
-    let mut rows = Rows::new(column_schemas, rows_per_batch, 1024)?;
+    let mut rows = Rows::new(column_schemas, rows_per_batch)?;
     for i in 0..rows_per_batch {
         let global_idx = batch_id * rows_per_batch + i;
         let timestamp = current_time + (global_idx as i64 * 50); // 50ms intervals

@@ -185,6 +185,25 @@ pub enum Error {
         #[snafu(implicit)]
         location: Location,
     },
+
+    #[snafu(display("Missing timestamp column in schema. Time windowing requires a column with SemanticType::Timestamp"))]
+    MissingTimestampColumn {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Timestamp value is null. Timestamp columns cannot contain null values"))]
+    NullTimestamp {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Invalid timestamp data type: {}. Expected Timestamp with Second, Millisecond, Microsecond, or Nanosecond unit", data_type))]
+    InvalidTimestampType {
+        data_type: String,
+        #[snafu(implicit)]
+        location: Location,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

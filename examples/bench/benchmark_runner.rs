@@ -271,7 +271,7 @@ impl BulkApiBenchmarkRunner {
         loop {
             let mut break_out = false;
             let batch_size = self.config.batch_size;
-            let mut rows_buf = bulk_writer.alloc_rows_buffer(batch_size, 1024).unwrap();
+            let mut rows_buf = bulk_writer.alloc_rows_buffer(batch_size).unwrap();
             for _ in 0..batch_size {
                 if let Some(row) = row_iter.next() {
                     rows_buf.add_row(row).unwrap();
