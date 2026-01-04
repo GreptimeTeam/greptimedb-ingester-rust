@@ -28,10 +28,10 @@ use crate::error;
 #[derive(Serialize, Deserialize)]
 pub struct DoPutMetadata {
     request_id: i64,
-    /// Start timestamp of the batch in nanoseconds (optional, for time-windowed batches)
+    /// Start timestamp of the batch (optional, for time-windowed batches)
     #[serde(skip_serializing_if = "Option::is_none")]
     start_timestamp: Option<i64>,
-    /// End timestamp of the batch in nanoseconds (optional, for time-windowed batches)
+    /// End timestamp of the batch (optional, for time-windowed batches)
     #[serde(skip_serializing_if = "Option::is_none")]
     end_timestamp: Option<i64>,
 }

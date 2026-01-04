@@ -1622,7 +1622,11 @@ mod tests {
     }
 
     // Helper function to add rows to a Rows collection
-    fn add_rows(rows: &mut Rows, timestamp_type: ColumnDataType, timestamps_and_values: &[(i64, i64)]) {
+    fn add_rows(
+        rows: &mut Rows,
+        timestamp_type: ColumnDataType,
+        timestamps_and_values: &[(i64, i64)],
+    ) {
         for (timestamp, value) in timestamps_and_values {
             let row = create_row(timestamp_type, *timestamp, *value);
             rows.add_row(row).expect("Failed to add row");
@@ -1631,7 +1635,8 @@ mod tests {
 
     // Helper function to convert Rows to sorted batches
     fn rows_to_sorted_batches(rows: Rows) -> Vec<RecordBatchWithTimestamp> {
-        let mut batches: Vec<RecordBatchWithTimestamp> = rows.try_into().expect("Failed to convert to batches");
+        let mut batches: Vec<RecordBatchWithTimestamp> =
+            rows.try_into().expect("Failed to convert to batches");
         batches.sort_by_key(|b| b.start_timestamp());
         batches
     }
@@ -1715,9 +1720,9 @@ mod tests {
             &mut rows,
             ColumnDataType::TimestampMillisecond,
             &[
-                (0, 1),                          // Window start
-                (window_duration - 1, 2),        // Just before next window
-                (window_duration, 3),             // Exactly at next window boundary
+                (0, 1),                   // Window start
+                (window_duration - 1, 2), // Just before next window
+                (window_duration, 3),     // Exactly at next window boundary
             ],
         );
 
@@ -1744,9 +1749,9 @@ mod tests {
             &mut rows,
             ColumnDataType::TimestampMillisecond,
             &[
-                (-window_duration, 1),                    // Window -1
-                (-window_duration + 1_800_000, 2),         // Window -1
-                (0, 3),                                    // Window 0
+                (-window_duration, 1),             // Window -1
+                (-window_duration + 1_800_000, 2), // Window -1
+                (0, 3),                            // Window 0
             ],
         );
 
