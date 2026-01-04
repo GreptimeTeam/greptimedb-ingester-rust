@@ -714,10 +714,10 @@ fn column_to_arrow_data_type(column: &Column) -> Result<DataType> {
         ColumnDataType::TimestampNanosecond => DataType::Timestamp(TimeUnit::Nanosecond, None),
 
         // Time types (without date)
-        ColumnDataType::TimeSecond => DataType::Time32(arrow_schema::TimeUnit::Second),
-        ColumnDataType::TimeMillisecond => DataType::Time32(arrow_schema::TimeUnit::Millisecond),
-        ColumnDataType::TimeMicrosecond => DataType::Time64(arrow_schema::TimeUnit::Microsecond),
-        ColumnDataType::TimeNanosecond => DataType::Time64(arrow_schema::TimeUnit::Nanosecond),
+        ColumnDataType::TimeSecond => DataType::Time32(TimeUnit::Second),
+        ColumnDataType::TimeMillisecond => DataType::Time32(TimeUnit::Millisecond),
+        ColumnDataType::TimeMicrosecond => DataType::Time64(TimeUnit::Microsecond),
+        ColumnDataType::TimeNanosecond => DataType::Time64(TimeUnit::Nanosecond),
 
         // Decimal type - extract precision and scale from column extension
         ColumnDataType::Decimal128 => {
@@ -1189,7 +1189,7 @@ fn create_array_builder(
 
             ArrayBuilderEnum::Decimal128(
                 Decimal128Builder::with_capacity(capacity)
-                    .with_data_type(arrow_schema::DataType::Decimal128(precision, scale)),
+                    .with_data_type(DataType::Decimal128(precision, scale)),
             )
         }
         ColumnDataType::Binary | ColumnDataType::Json => {
@@ -1589,5 +1589,173 @@ mod tests {
 
         // Verify row count
         assert_eq!(builder.len(), 4);
+    }
+
+    // Helper function to create a simple schema with timestamp and value columns
+    fn create_timestamp_schema(timestamp_type: ColumnDataType) -> Vec<Column> {
+        vec![
+            Column {
+                name: "ts".to_string(),
+                data_type: timestamp_type,
+                semantic_type: SemanticType::Timestamp,
+                data_type_extension: None,
+            },
+            Column {
+                name: "value".to_string(),
+                data_type: ColumnDataType::Int64,
+                semantic_type: SemanticType::Field,
+                data_type_extension: None,
+            },
+        ]
+    }
+
+    // Helper function to create a row with timestamp and value
+    fn create_row(timestamp_type: ColumnDataType, timestamp: i64, value: i64) -> crate::table::Row {
+        let timestamp_value = match timestamp_type {
+            ColumnDataType::TimestampSecond => Value::TimestampSecond(timestamp),
+            ColumnDataType::TimestampMillisecond => Value::TimestampMillisecond(timestamp),
+            ColumnDataType::TimestampMicrosecond => Value::TimestampMicrosecond(timestamp),
+            ColumnDataType::TimestampNanosecond => Value::TimestampNanosecond(timestamp),
+            _ => panic!("Unsupported timestamp type for test"),
+        };
+        Row::new().add_values(vec![timestamp_value, Value::Int64(value)])
+    }
+
+    // Helper function to add rows to a Rows collection
+    fn add_rows(rows: &mut Rows, timestamp_type: ColumnDataType, timestamps_and_values: &[(i64, i64)]) {
+        for (timestamp, value) in timestamps_and_values {
+            let row = create_row(timestamp_type, *timestamp, *value);
+            rows.add_row(row).expect("Failed to add row");
+        }
+    }
+
+    // Helper function to convert Rows to sorted batches
+    fn rows_to_sorted_batches(rows: Rows) -> Vec<RecordBatchWithTimestamp> {
+        let mut batches: Vec<RecordBatchWithTimestamp> = rows.try_into().expect("Failed to convert to batches");
+        batches.sort_by_key(|b| b.start_timestamp());
+        batches
+    }
+
+    #[test]
+    fn test_calculate_window_key_timestamp_millisecond() {
+        // Create schema with TimestampMillisecond (window duration = 3600 * 1000 = 3,600,000 ms = 1 hour)
+        let schema = create_timestamp_schema(ColumnDataType::TimestampMillisecond);
+        let mut rows = Rows::new(&schema, 10).expect("Failed to create rows");
+
+        // Test 1: Timestamps in the same window should end up in the same batch
+        // Window 0: 0 to 3,599,999
+        add_rows(
+            &mut rows,
+            ColumnDataType::TimestampMillisecond,
+            &[(0, 1), (1_800_000, 2), (3_599_999, 3)],
+        );
+
+        // Test 2: Timestamps in different windows should end up in different batches
+        // Window 1: 3,600,000 to 7,199,999
+        add_rows(
+            &mut rows,
+            ColumnDataType::TimestampMillisecond,
+            &[(3_600_000, 4), (5_400_000, 5)],
+        );
+
+        let batches = rows_to_sorted_batches(rows);
+
+        // Should have 2 batches (2 different windows)
+        assert_eq!(batches.len(), 2);
+
+        // First batch should contain rows from window 0
+        assert_eq!(batches[0].start_timestamp(), 0);
+        assert_eq!(batches[0].end_timestamp(), 3_599_999);
+        assert_eq!(batches[0].batch().num_rows(), 3);
+
+        // Second batch should contain rows from window 1
+        assert_eq!(batches[1].start_timestamp(), 3_600_000);
+        assert_eq!(batches[1].end_timestamp(), 5_400_000);
+        assert_eq!(batches[1].batch().num_rows(), 2);
+    }
+
+    #[test]
+    fn test_calculate_window_key_timestamp_second() {
+        // Create schema with TimestampSecond (window duration = 3600 seconds = 1 hour)
+        let schema = create_timestamp_schema(ColumnDataType::TimestampSecond);
+        let mut rows = Rows::new(&schema, 10).expect("Failed to create rows");
+
+        // Window 0: 0 to 3599
+        add_rows(
+            &mut rows,
+            ColumnDataType::TimestampSecond,
+            &[(0, 1), (1800, 2)],
+        );
+
+        // Window 1: 3600 to 7199
+        add_rows(&mut rows, ColumnDataType::TimestampSecond, &[(3600, 3)]);
+
+        let batches = rows_to_sorted_batches(rows);
+
+        assert_eq!(batches.len(), 2);
+        // First batch: min=0, max=1800
+        assert_eq!(batches[0].start_timestamp(), 0);
+        assert_eq!(batches[0].end_timestamp(), 1800);
+        assert_eq!(batches[0].batch().num_rows(), 2);
+        // Second batch: min=3600, max=3600
+        assert_eq!(batches[1].start_timestamp(), 3600);
+        assert_eq!(batches[1].end_timestamp(), 3600);
+        assert_eq!(batches[1].batch().num_rows(), 1);
+    }
+
+    #[test]
+    fn test_calculate_window_key_boundary_conditions() {
+        // Test timestamps exactly at window boundaries
+        let schema = create_timestamp_schema(ColumnDataType::TimestampMillisecond);
+        let mut rows = Rows::new(&schema, 10).expect("Failed to create rows");
+        let window_duration = 3600i64 * 1000; // 1 hour in milliseconds
+
+        // Add rows at window boundaries
+        add_rows(
+            &mut rows,
+            ColumnDataType::TimestampMillisecond,
+            &[
+                (0, 1),                          // Window start
+                (window_duration - 1, 2),        // Just before next window
+                (window_duration, 3),             // Exactly at next window boundary
+            ],
+        );
+
+        let batches = rows_to_sorted_batches(rows);
+
+        assert_eq!(batches.len(), 2);
+        // First batch should have rows from window 0
+        assert_eq!(batches[0].start_timestamp(), 0);
+        assert_eq!(batches[0].batch().num_rows(), 2);
+        // Second batch should have row from window 1
+        assert_eq!(batches[1].start_timestamp(), window_duration);
+        assert_eq!(batches[1].batch().num_rows(), 1);
+    }
+
+    #[test]
+    fn test_calculate_window_key_negative_timestamps() {
+        // Test with negative timestamps (before epoch)
+        let schema = create_timestamp_schema(ColumnDataType::TimestampMillisecond);
+        let mut rows = Rows::new(&schema, 10).expect("Failed to create rows");
+        let window_duration = 3600i64 * 1000;
+
+        // Negative timestamps should still be grouped into windows
+        add_rows(
+            &mut rows,
+            ColumnDataType::TimestampMillisecond,
+            &[
+                (-window_duration, 1),                    // Window -1
+                (-window_duration + 1_800_000, 2),         // Window -1
+                (0, 3),                                    // Window 0
+            ],
+        );
+
+        let batches = rows_to_sorted_batches(rows);
+
+        // Should have 2 batches (negative window and zero window)
+        assert_eq!(batches.len(), 2);
+        // Verify that rows are correctly grouped
+        let total_rows: usize = batches.iter().map(|b| b.batch().num_rows()).sum();
+        assert_eq!(total_rows, 3);
     }
 }
