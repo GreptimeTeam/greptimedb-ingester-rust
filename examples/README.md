@@ -5,6 +5,7 @@ This directory contains comprehensive examples demonstrating two distinct ingest
 ## Examples Overview
 
 ### `insert_example.rs` - Low-Latency Insert API
+
 **Best for**: Real-time applications, IoT sensors, interactive systems
 
 ```bash
@@ -12,54 +13,63 @@ cargo run --example insert_example
 ```
 
 **Features:**
+
 - **Minimal latency**: sub-millisecond per operation
 - **Real-time processing**: Immediate feedback and processing
 - **Small batches**: Optimized for 200-1000 rows per request
 - **Interactive patterns**: Perfect for user-facing applications
 
 **Demonstrates:**
+
 - Real-time sensor data ingestion with latency measurements
 - Comprehensive data type support (JSON, binary, timestamps, etc.)
 - Best practices for low-latency scenarios
 
 ### `bulk_stream_writer_example.rs` - High-Throughput Bulk API
+
 **Best for**: ETL operations, data migration, batch processing, log ingestion
 
 > [!IMPORTANT]
 > Bulk API requires manual table creation.
+>
 > ```
 > CREATE TABLE high_throughput_sequential (
->     ts TIMESTAMP TIME INDEX,
+>     ts TIMESTAMP,
 >     sensor_id STRING,
 >     temperature DOUBLE,
->     sensor_status BIGINT
+>     sensor_status BIGINT,
+>     TIME INDEX (ts),
+>     PRIMARY KEY (sensor_id)
 >  );
 >
 >  CREATE TABLE high_throughput_parallel (
->      ts TIMESTAMP TIME INDEX,
+>      ts TIMESTAMP,
 >      sensor_id STRING,
 >      temperature DOUBLE,
->      sensor_status BIGINT
+>      sensor_status BIGINT,
+>      TIME INDEX (ts),
+>      PRIMARY KEY (sensor_id)
 >  );
->  ```
+> ```
 
 ```bash
 cargo run --example bulk_stream_writer_example
 ```
 
 **Features:**
+
 - **High throughput**: 10k-100k+ rows/sec
 - **Parallel processing**: Configurable concurrent requests
 - **Efficient batching**: Optimized for 2k-100k+ rows per request
 - **Performance optimization**: Compression, connection reuse
 
 **Demonstrates:**
+
 - Sequential vs parallel processing performance comparison
 - Async submission patterns with `write_rows_async()`
 - Optimal configuration for high-volume scenarios
 - Performance metrics and best practices
 - **Important**: Bulk API requires manual table creation (does not auto-create tables)
-- Current limitation: bulk operations work only with field columns (tag support coming)
 
 ### `bulk_api_log_benchmark.rs` and `bulk_stream_writer_example.rs` - Benchmarks
 
@@ -68,7 +78,7 @@ See also [GreptimeDB Benchmark Utilities](./bench/README.md)
 ## Choosing the Right Example
 
 | Scenario                   | Example                         | Why                                     |
-|----------------------------|---------------------------------|-----------------------------------------|
+| -------------------------- | ------------------------------- | --------------------------------------- |
 | **IoT sensor data**        | `insert_example.rs`             | Real-time requirements, small batches   |
 | **Interactive dashboards** | `insert_example.rs`             | User expects immediate feedback         |
 | **ETL pipelines**          | `bulk_stream_writer_example.rs` | Process millions of records efficiently |
@@ -96,24 +106,27 @@ dbname = "public"
 ## Quick Start
 
 1. **For real-time applications**:
-   ```bash
-   cargo run --example insert_example
-   ```
+
+    ```bash
+    cargo run --example insert_example
+    ```
 
 2. **For high-volume batch processing**:
-   ```bash
-   cargo run --example bulk_stream_writer_example
-   ```
+    ```bash
+    cargo run --example bulk_stream_writer_example
+    ```
 
 ## Performance Characteristics
 
 ### Low-Latency Insert (`insert_example.rs`)
+
 - **Latency**: sub-millisecond per operation
 - **Throughput**: 200-1,000 ops/sec
 - **Memory**: Low, constant
 - **Network**: One request per operation
 
 ### High-Throughput Bulk (`bulk_stream_writer_example.rs`)
+
 - **Latency**: 1-1000 milliseconds per batch
 - **Throughput**: > 10k rows/sec
 - **Memory**: Higher during batching
@@ -122,6 +135,7 @@ dbname = "public"
 ## Code Patterns
 
 ### Low-Latency Pattern
+
 ```rust
 // Connect and insert immediately
 let database = Database::new_with_dbname("public", client);
@@ -130,6 +144,7 @@ println!("Inserted {} rows in {}ms", affected_rows, latency.as_millis());
 ```
 
 ### High-Throughput Pattern
+
 ```rust
 // Create persistent stream writer
 let mut bulk_writer = bulk_inserter
@@ -150,6 +165,7 @@ bulk_writer.finish().await?;
 ## Running Examples
 
 ### Commands
+
 ```bash
 # Check compilation
 cargo check --examples
@@ -157,7 +173,7 @@ cargo check --examples
 # Run low-latency example
 cargo run --example insert_example
 
-# Run high-throughput example  
+# Run high-throughput example
 cargo run --example bulk_stream_writer_example
 
 # Run both with logging
@@ -168,6 +184,7 @@ RUST_LOG=info cargo run --example bulk_stream_writer_example
 ## Example Output
 
 ### insert_example.rs
+
 ```
 === Real-time Insert Example ===
 Use case: Low-latency, small batch inserts for real-time applications
@@ -178,6 +195,7 @@ Real-time insertion completed successfully!
 ```
 
 ### bulk_stream_writer_example.rs
+
 ```
 === High-Throughput Bulk Stream Writer Example ===
 [1/2] Sequential Baseline (traditional approach)
@@ -193,6 +211,7 @@ Speedup: 2.9x faster with parallel approach
 ## Understanding the Output
 
 Both examples provide detailed performance metrics to help you understand:
+
 - **Latency**: Time per individual operation
 - **Throughput**: Total operations per second
 - **Success rates**: Proportion of successful operations
@@ -200,6 +219,7 @@ Both examples provide detailed performance metrics to help you understand:
 - **Network efficiency**: Bandwidth utilization
 
 Use these metrics to:
+
 1. Validate performance requirements
 2. Tune configuration parameters
 3. Choose the right approach for your use case
@@ -213,31 +233,16 @@ Use these metrics to:
    Refer to the content in the prompt block in the previous article.
 
 2. **Or use insert API first** (as shown in examples):
-   ```rust
-   // Insert one row to create the table
-   database.insert(initial_request).await?;
-   // Then use bulk API for high-throughput operations
-   ```
-
-## Column Types in Bulk vs Insert Operations
-
-**Important Difference**: The two examples use different column types due to current limitations:
-
-### Low-Latency Insert (`insert_example.rs`)
-- Uses **tag columns** for primary key: `tag("device_id", ColumnDataType::String)`
-- Uses **field columns** for measurements: `field("temperature", ColumnDataType::Float64)`
-- Tag columns are part of the primary key and provide fast querying
-
-### High-Throughput Bulk (`bulk_stream_writer_example.rs`)  
-- Uses **field columns** for all data: `add_field("sensor_id", ColumnDataType::String)`
-- Uses **field columns** for measurements: `add_field("temperature", ColumnDataType::Float64)`
-- Currently, bulk operations only support field columns
-
-> **Key Insight**: Bulk operations currently don't support tables with tag columns. This is a temporary limitation - future versions will support tag columns in bulk operations. Tag columns serve as part of the primary key in GreptimeDB.
+    ```rust
+    // Insert one row to create the table
+    database.insert(initial_request).await?;
+    // Then use bulk API for high-throughput operations
+    ```
 
 ## Next Steps
 
 After running the examples:
+
 1. Study the code patterns that match your use case
 2. Adapt the schema definitions for your data
 3. Adjust performance parameters (batch sizes, parallelism)

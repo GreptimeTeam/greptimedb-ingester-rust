@@ -123,7 +123,7 @@ fn create_test_rows(
         let status = if global_idx.is_multiple_of(100) { 0 } else { 1 }; // 1% error rate
 
         // Row values must match table_template column order exactly:
-        // Index 0: ts (timestamp), Index 1: sensor_id, Index 2: temperature, Index 3: sensor_status
+        // Index 0: ts (timestamp), Index 1: sensor_id (tag), Index 2: temperature, Index 3: sensor_status
         let row = Row::new().add_values(vec![
             Value::TimestampMillisecond(timestamp), // Index 0: ts
             Value::String(device_id),               // Index 1: sensor_id
@@ -158,7 +158,7 @@ async fn run_sequential_writes() -> Result<Duration> {
         .build()
         .unwrap()
         .add_timestamp("ts", ColumnDataType::TimestampMillisecond) // Index 0
-        .add_field("sensor_id", ColumnDataType::String) // Index 1
+        .add_tag("sensor_id", ColumnDataType::String) // Index 1
         .add_field("temperature", ColumnDataType::Float64) // Index 2
         .add_field("sensor_status", ColumnDataType::Int64); // Index 3
 
@@ -244,7 +244,7 @@ async fn run_parallel_writes() -> Result<Duration> {
         .build()
         .unwrap()
         .add_timestamp("ts", ColumnDataType::TimestampMillisecond) // Index 0
-        .add_field("sensor_id", ColumnDataType::String) // Index 1
+        .add_tag("sensor_id", ColumnDataType::String) // Index 1
         .add_field("temperature", ColumnDataType::Float64) // Index 2
         .add_field("sensor_status", ColumnDataType::Int64); // Index 3
 
