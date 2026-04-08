@@ -51,7 +51,7 @@ fn create_test_rows_optimized(
         let timestamp = current_time + (global_idx as i64 * 50);
         let device_id = format!("sensor_{:06}", global_idx % 1000);
         let temperature = 18.0 + (global_idx as f64 * 0.03) % 25.0;
-        let status = if global_idx.is_multiple_of(100) { 0 } else { 1 };
+        let status = if global_idx % 100 == 0 { 0 } else { 1 };
 
         // Traditional approach: build row by index (fast but error-prone)
         let row = Row::new().add_values(vec![
@@ -85,7 +85,7 @@ fn create_test_rows_safe(
         let timestamp = current_time + (global_idx as i64 * 50);
         let device_id = format!("safe_sensor_{:06}", global_idx % 1000);
         let temperature = 18.0 + (global_idx as f64 * 0.03) % 25.0;
-        let status = if global_idx.is_multiple_of(100) { 0 } else { 1 };
+        let status = if global_idx % 100 == 0 { 0 } else { 1 };
 
         // Schema-safe approach: build row by field name (safest)
         let row = writer
@@ -120,7 +120,7 @@ fn create_test_rows(
         let timestamp = current_time + (global_idx as i64 * 50); // 50ms intervals
         let device_id = format!("sensor_{:06}", global_idx % 1000); // 1000 unique sensors
         let temperature = 18.0 + (global_idx as f64 * 0.03) % 25.0; // 18-43°C range
-        let status = if global_idx.is_multiple_of(100) { 0 } else { 1 }; // 1% error rate
+        let status = if global_idx % 100 == 0 { 0 } else { 1 }; // 1% error rate
 
         // Row values must match table_template column order exactly:
         // Index 0: ts (timestamp), Index 1: sensor_id (tag), Index 2: temperature, Index 3: sensor_status

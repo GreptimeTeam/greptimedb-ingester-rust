@@ -405,7 +405,7 @@ fn create_test_batch_bulk(
         let sensor_id = format!("sensor_{:06}", global_idx % 100);
         let temperature = 20.0 + (global_idx as f64 * 0.1) % 30.0;
         let timestamp = current_time + (global_idx as i64 * 10);
-        let status = if global_idx.is_multiple_of(10) { 0 } else { 1 };
+        let status = if global_idx % 10 == 0 { 0 } else { 1 };
 
         let row = Row::new().add_values(vec![
             Value::TimestampMillisecond(timestamp),
