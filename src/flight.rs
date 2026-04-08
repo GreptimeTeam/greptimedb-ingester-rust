@@ -31,6 +31,7 @@ pub struct FlightEncoder {
     write_options: writer::IpcWriteOptions,
     data_gen: writer::IpcDataGenerator,
     dictionary_tracker: writer::DictionaryTracker,
+    compression_context: writer::CompressionContext,
 }
 
 impl Default for FlightEncoder {
@@ -43,6 +44,7 @@ impl Default for FlightEncoder {
             write_options,
             data_gen: writer::IpcDataGenerator::default(),
             dictionary_tracker: writer::DictionaryTracker::new(false),
+            compression_context: writer::CompressionContext::default(),
         }
     }
 }
@@ -64,6 +66,7 @@ impl FlightEncoder {
             write_options,
             data_gen: writer::IpcDataGenerator::default(),
             dictionary_tracker: writer::DictionaryTracker::new(false),
+            compression_context: writer::CompressionContext::default(),
         }
     }
 
@@ -79,10 +82,11 @@ impl FlightEncoder {
             FlightMessage::RecordBatch(record_batch) => {
                 let (encoded_dictionaries, encoded_batch) = self
                     .data_gen
-                    .encoded_batch(
+                    .encode(
                         &record_batch,
                         &mut self.dictionary_tracker,
                         &self.write_options,
+                        &mut self.compression_context,
                     )
                     .expect("DictionaryTracker configured above to not fail on replacement");
 
