@@ -25,7 +25,7 @@ pub mod helpers;
 pub mod load_balance;
 pub mod table;
 
-pub use self::channel_manager::{ChannelConfig, ChannelManager, ClientTlsOption};
+pub use self::channel_manager::{ChannelConfig, ChannelManager, ClientTlsOption, GrpcCompression};
 pub use self::error::{Error, Result};
 
 // Re-export bulk module components for easier access

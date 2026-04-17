@@ -1,14 +1,14 @@
 
 services:
   greptimedb-test:
-    image: greptime/greptimedb:v0.15.0-nightly-20250616
+    image: greptime/greptimedb:v1.0.0
     container_name: greptimedb-test
     ports:
       - "4000:4000"  # HTTP port
       - "4001:4001"  # gRPC port
     environment:
       - GREPTIMEDB_LOG_LEVEL=info
-    command: standalone start --http-addr=0.0.0.0:4000 --rpc-addr=0.0.0.0:4001
+    command: standalone start --http-addr=0.0.0.0:4000 --rpc-bind-addr=0.0.0.0:4001
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
       interval: 10s

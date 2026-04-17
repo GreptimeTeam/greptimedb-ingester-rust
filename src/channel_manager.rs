@@ -21,6 +21,7 @@ use dashmap::DashMap;
 use lazy_static::lazy_static;
 use snafu::{OptionExt, ResultExt};
 use tokio_util::sync::CancellationToken;
+use tonic::codec::CompressionEncoding;
 use tonic::transport::{
     Certificate, Channel as InnerChannel, ClientTlsConfig, Endpoint, Identity, Uri,
 };
@@ -274,6 +275,21 @@ pub struct ClientTlsOption {
     pub client_key_path: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GrpcCompression {
+    Gzip,
+    Zstd,
+}
+
+impl From<GrpcCompression> for CompressionEncoding {
+    fn from(value: GrpcCompression) -> Self {
+        match value {
+            GrpcCompression::Gzip => CompressionEncoding::Gzip,
+            GrpcCompression::Zstd => CompressionEncoding::Zstd,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelConfig {
     pub timeout: Option<Duration>,
@@ -293,11 +309,26 @@ pub struct ChannelConfig {
     pub max_recv_message_size: u64,
     // Max gRPC sending(encoding) message size
     pub max_send_message_size: u64,
+    /// Preferred explicit gRPC compression encoding for requests.
+    pub send_compression_encoding: Option<GrpcCompression>,
+    /// Preferred explicit gRPC compression encoding for responses.
+    pub accept_compression_encoding: Option<GrpcCompression>,
+    /// Legacy compatibility flag that enables Zstd request compression.
+    /// `send_compression_encoding` takes precedence when both are set.
+    #[deprecated(
+        note = "use with_send_compression(GrpcCompression) to choose the encoding explicitly"
+    )]
     pub send_compression: bool,
+    /// Legacy compatibility flag that enables Zstd response compression.
+    /// `accept_compression_encoding` takes precedence when both are set.
+    #[deprecated(
+        note = "use with_accept_compression(GrpcCompression) to choose the encoding explicitly"
+    )]
     pub accept_compression: bool,
 }
 
 impl Default for ChannelConfig {
+    #[allow(deprecated)]
     fn default() -> Self {
         Self {
             timeout: Some(Duration::from_secs(DEFAULT_GRPC_REQUEST_TIMEOUT_SECS)),
@@ -315,6 +346,8 @@ impl Default for ChannelConfig {
             client_tls: None,
             max_recv_message_size: DEFAULT_MAX_GRPC_RECV_MESSAGE_SIZE,
             max_send_message_size: DEFAULT_MAX_GRPC_SEND_MESSAGE_SIZE,
+            send_compression_encoding: None,
+            accept_compression_encoding: None,
             send_compression: false,
             accept_compression: false,
         }
@@ -416,6 +449,30 @@ impl ChannelConfig {
     pub fn client_tls_config(mut self, client_tls_option: ClientTlsOption) -> Self {
         self.client_tls = Some(client_tls_option);
         self
+    }
+
+    /// Set the gRPC compression encoding used when sending requests.
+    pub fn with_send_compression(mut self, compression: GrpcCompression) -> Self {
+        self.send_compression_encoding = Some(compression);
+        self
+    }
+
+    /// Set the gRPC compression encoding accepted from responses.
+    pub fn with_accept_compression(mut self, compression: GrpcCompression) -> Self {
+        self.accept_compression_encoding = Some(compression);
+        self
+    }
+
+    #[allow(deprecated)]
+    pub(crate) fn resolved_send_compression(&self) -> Option<GrpcCompression> {
+        self.send_compression_encoding
+            .or_else(|| self.send_compression.then_some(GrpcCompression::Zstd))
+    }
+
+    #[allow(deprecated)]
+    pub(crate) fn resolved_accept_compression(&self) -> Option<GrpcCompression> {
+        self.accept_compression_encoding
+            .or_else(|| self.accept_compression.then_some(GrpcCompression::Zstd))
     }
 }
 
@@ -542,6 +599,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_config() {
         let default_cfg = ChannelConfig::new();
         assert_eq!(
@@ -561,6 +619,8 @@ mod tests {
                 client_tls: None,
                 max_recv_message_size: DEFAULT_MAX_GRPC_RECV_MESSAGE_SIZE,
                 max_send_message_size: DEFAULT_MAX_GRPC_SEND_MESSAGE_SIZE,
+                send_compression_encoding: None,
+                accept_compression_encoding: None,
                 send_compression: false,
                 accept_compression: false,
             },
@@ -607,10 +667,54 @@ mod tests {
                 }),
                 max_recv_message_size: DEFAULT_MAX_GRPC_RECV_MESSAGE_SIZE,
                 max_send_message_size: DEFAULT_MAX_GRPC_SEND_MESSAGE_SIZE,
+                send_compression_encoding: None,
+                accept_compression_encoding: None,
                 send_compression: false,
                 accept_compression: false,
             },
             cfg
+        );
+    }
+
+    #[test]
+    fn test_grpc_compression_config() {
+        let config = ChannelConfig::new()
+            .with_send_compression(GrpcCompression::Gzip)
+            .with_accept_compression(GrpcCompression::Zstd);
+
+        assert_eq!(
+            Some(GrpcCompression::Gzip),
+            config.send_compression_encoding
+        );
+        assert_eq!(
+            Some(GrpcCompression::Zstd),
+            config.accept_compression_encoding
+        );
+        #[allow(deprecated)]
+        {
+            assert!(!config.send_compression);
+            assert!(!config.accept_compression);
+        }
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_explicit_grpc_compression_resolves_before_legacy_flags() {
+        let config = ChannelConfig {
+            send_compression_encoding: Some(GrpcCompression::Gzip),
+            accept_compression_encoding: Some(GrpcCompression::Zstd),
+            send_compression: true,
+            accept_compression: false,
+            ..ChannelConfig::default()
+        };
+
+        assert_eq!(
+            Some(GrpcCompression::Gzip),
+            config.resolved_send_compression()
+        );
+        assert_eq!(
+            Some(GrpcCompression::Zstd),
+            config.resolved_accept_compression()
         );
     }
 

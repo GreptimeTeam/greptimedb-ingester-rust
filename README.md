@@ -405,19 +405,23 @@ fn process_row_data(row: &Row) {
 Set up your GreptimeDB connection:
 
 ```rust,no_run
-use greptimedb_ingester::{ChannelConfig, ChannelManager};
+use greptimedb_ingester::{ChannelConfig, ChannelManager, GrpcCompression};
 use greptimedb_ingester::client::Client;
 use std::time::Duration;
 
 fn setup_client() -> Client {
     let channel_config = ChannelConfig::default()
         .timeout(Duration::from_secs(30))
-        .connect_timeout(Duration::from_secs(5));
+        .connect_timeout(Duration::from_secs(5))
+        .with_send_compression(GrpcCompression::Zstd)
+        .with_accept_compression(GrpcCompression::Zstd);
     let channel_manager = ChannelManager::with_config(channel_config);
     Client::with_manager_and_urls(channel_manager,
         &["localhost:4001"])
 }
 ```
+
+Use `GrpcCompression::Gzip` or `GrpcCompression::Zstd` depending on the server you are targeting.
 
 ## Error Handling
 

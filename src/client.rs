@@ -121,19 +121,17 @@ impl Client {
     }
 
     pub fn send_compression(&self) -> Option<CompressionEncoding> {
-        if self.inner.channel_manager.config().send_compression {
-            Some(CompressionEncoding::Zstd)
-        } else {
-            None
-        }
+        let config = self.inner.channel_manager.config();
+        config
+            .resolved_send_compression()
+            .map(CompressionEncoding::from)
     }
 
     pub fn accept_compression(&self) -> Option<CompressionEncoding> {
-        if self.inner.channel_manager.config().accept_compression {
-            Some(CompressionEncoding::Zstd)
-        } else {
-            None
-        }
+        let config = self.inner.channel_manager.config();
+        config
+            .resolved_accept_compression()
+            .map(CompressionEncoding::from)
     }
 
     pub fn make_flight_client(&self) -> Result<FlightClient> {
@@ -183,5 +181,43 @@ impl Inner {
     fn get_peer(&self) -> Option<String> {
         let guard = self.peers.read();
         self.load_balance.get_peer(&guard).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::GrpcCompression;
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_explicit_grpc_compression_takes_precedence() {
+        let config = ChannelConfig {
+            send_compression_encoding: Some(GrpcCompression::Gzip),
+            accept_compression_encoding: Some(GrpcCompression::Zstd),
+            send_compression: true,
+            accept_compression: false,
+            ..ChannelConfig::default()
+        };
+
+        let client = Client::with_manager_and_urls(ChannelManager::with_config(config), ["test"]);
+
+        assert_eq!(Some(CompressionEncoding::Gzip), client.send_compression());
+        assert_eq!(Some(CompressionEncoding::Zstd), client.accept_compression());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_legacy_grpc_compression_defaults_to_zstd() {
+        let config = ChannelConfig {
+            send_compression: true,
+            accept_compression: true,
+            ..ChannelConfig::default()
+        };
+
+        let client = Client::with_manager_and_urls(ChannelManager::with_config(config), ["test"]);
+
+        assert_eq!(Some(CompressionEncoding::Zstd), client.send_compression());
+        assert_eq!(Some(CompressionEncoding::Zstd), client.accept_compression());
     }
 }
