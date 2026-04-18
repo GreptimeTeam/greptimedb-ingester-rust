@@ -275,9 +275,12 @@ pub struct ClientTlsOption {
     pub client_key_path: String,
 }
 
+/// gRPC compression algorithms supported by [`ChannelConfig`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GrpcCompression {
+    /// Gzip compression.
     Gzip,
+    /// Zstandard compression.
     Zstd,
 }
 
@@ -328,8 +331,14 @@ pub struct ChannelConfig {
 }
 
 impl Default for ChannelConfig {
-    #[allow(deprecated)]
     fn default() -> Self {
+        Self::default_with_legacy_grpc_compression()
+    }
+}
+
+impl ChannelConfig {
+    #[allow(deprecated)]
+    fn default_with_legacy_grpc_compression() -> Self {
         Self {
             timeout: Some(Duration::from_secs(DEFAULT_GRPC_REQUEST_TIMEOUT_SECS)),
             connect_timeout: Some(Duration::from_secs(DEFAULT_GRPC_CONNECT_TIMEOUT_SECS)),
@@ -352,9 +361,7 @@ impl Default for ChannelConfig {
             accept_compression: false,
         }
     }
-}
 
-impl ChannelConfig {
     pub fn new() -> Self {
         Default::default()
     }

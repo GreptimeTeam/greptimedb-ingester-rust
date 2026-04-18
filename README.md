@@ -1,5 +1,10 @@
 # GreptimeDB Rust Ingester
 
+[![crates.io](https://img.shields.io/crates/v/greptimedb-ingester.svg)](https://crates.io/crates/greptimedb-ingester)
+[![docs.rs](https://docs.rs/greptimedb-ingester/badge.svg)](https://docs.rs/greptimedb-ingester)
+[![license](https://img.shields.io/crates/l/greptimedb-ingester.svg)](https://github.com/GreptimeTeam/greptimedb-ingester-rust/blob/main/LICENSE)
+[![CI](https://github.com/GreptimeTeam/greptimedb-ingester-rust/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/GreptimeTeam/greptimedb-ingester-rust/actions/workflows/ci.yml)
+
 A high-performance Rust client for ingesting data into GreptimeDB, supporting both low-latency individual inserts and high-throughput bulk streaming operations.
 
 ## Features
@@ -405,23 +410,31 @@ fn process_row_data(row: &Row) {
 Set up your GreptimeDB connection:
 
 ```rust,no_run
-use greptimedb_ingester::{ChannelConfig, ChannelManager, GrpcCompression};
+use greptimedb_ingester::{ChannelConfig, ChannelManager};
 use greptimedb_ingester::client::Client;
 use std::time::Duration;
 
 fn setup_client() -> Client {
     let channel_config = ChannelConfig::default()
         .timeout(Duration::from_secs(30))
-        .connect_timeout(Duration::from_secs(5))
-        .with_send_compression(GrpcCompression::Zstd)
-        .with_accept_compression(GrpcCompression::Zstd);
+        .connect_timeout(Duration::from_secs(5));
     let channel_manager = ChannelManager::with_config(channel_config);
     Client::with_manager_and_urls(channel_manager,
         &["localhost:4001"])
 }
 ```
 
-Use `GrpcCompression::Gzip` or `GrpcCompression::Zstd` depending on the server you are targeting.
+Leave transport compression unset unless you need it explicitly. If the server expects compressed gRPC traffic, configure it like this:
+
+```rust,no_run
+use greptimedb_ingester::{ChannelConfig, GrpcCompression};
+
+let channel_config = ChannelConfig::default()
+    .with_send_compression(GrpcCompression::Zstd)
+    .with_accept_compression(GrpcCompression::Zstd);
+```
+
+Use `GrpcCompression::Gzip` or `GrpcCompression::Zstd` based on the server configuration.
 
 ## Error Handling
 
