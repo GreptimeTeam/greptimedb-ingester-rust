@@ -65,6 +65,12 @@ path = "tests/integration/integration_test.rs"
 harness = true
 required-features = ["integration-tests"]
 
+[[test]]
+name = "compression_integration"
+path = "tests/integration/compression_integration.rs"
+harness = true
+required-features = ["integration-tests"]
+
 [features]
 default = []
 integration-tests = []

@@ -23,6 +23,7 @@ use greptimedb_ingester::{
     BulkInserter, BulkWriteOptions, ChannelConfig, ChannelManager, ColumnDataType, CompressionType,
     GrpcCompression, Row as BulkRow, TableSchema, Value,
 };
+use uuid::Uuid;
 
 struct TestConfig {
     endpoint: String,
@@ -45,7 +46,7 @@ fn unique_table_name(prefix: &str) -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    format!("{prefix}_{ts}")
+    format!("{prefix}_{ts}_{}", Uuid::new_v4().simple())
 }
 
 fn make_client(config: &TestConfig, compression: Option<GrpcCompression>) -> Client {
@@ -169,19 +170,16 @@ async fn insert_with_bulk_compression(
 }
 
 #[tokio::test]
-#[ignore = "requires a running GreptimeDB standalone instance"]
 async fn test_insert_with_gzip_grpc_compression() {
     insert_with_grpc_compression(GrpcCompression::Gzip).await;
 }
 
 #[tokio::test]
-#[ignore = "requires a running GreptimeDB standalone instance"]
 async fn test_insert_with_zstd_grpc_compression() {
     insert_with_grpc_compression(GrpcCompression::Zstd).await;
 }
 
 #[tokio::test]
-#[ignore = "requires a running GreptimeDB standalone instance"]
 async fn test_bulk_insert_with_gzip_grpc_compression() {
     insert_with_bulk_compression(
         Some(GrpcCompression::Gzip),
@@ -192,7 +190,6 @@ async fn test_bulk_insert_with_gzip_grpc_compression() {
 }
 
 #[tokio::test]
-#[ignore = "requires a running GreptimeDB standalone instance"]
 async fn test_bulk_insert_with_zstd_grpc_compression() {
     insert_with_bulk_compression(
         Some(GrpcCompression::Zstd),
@@ -203,13 +200,11 @@ async fn test_bulk_insert_with_zstd_grpc_compression() {
 }
 
 #[tokio::test]
-#[ignore = "requires a running GreptimeDB standalone instance"]
 async fn test_bulk_insert_with_lz4_payload_compression() {
     insert_with_bulk_compression(None, CompressionType::Lz4, "payload_bulk_compression").await;
 }
 
 #[tokio::test]
-#[ignore = "requires a running GreptimeDB standalone instance"]
 async fn test_bulk_insert_with_zstd_payload_compression() {
     insert_with_bulk_compression(None, CompressionType::Zstd, "payload_bulk_compression").await;
 }

@@ -57,7 +57,7 @@ jobs:
         echo "GreptimeDB is ready!"
 
     - name: Run integration tests
-      run: cargo test --test integration --features integration-tests --verbose
+      run: cargo test --tests --features integration-tests --verbose
       env:
         RUST_LOG: info
 
