@@ -1,10 +1,5 @@
 # GreptimeDB Rust Ingester
 
-[![crates.io](https://img.shields.io/crates/v/greptimedb-ingester.svg)](https://crates.io/crates/greptimedb-ingester)
-[![docs.rs](https://docs.rs/greptimedb-ingester/badge.svg)](https://docs.rs/greptimedb-ingester)
-[![license](https://img.shields.io/crates/l/greptimedb-ingester.svg)](https://github.com/GreptimeTeam/greptimedb-ingester-rust/blob/main/LICENSE)
-[![CI](https://github.com/GreptimeTeam/greptimedb-ingester-rust/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/GreptimeTeam/greptimedb-ingester-rust/actions/workflows/ci.yml)
-
 A high-performance Rust client for ingesting data into GreptimeDB, supporting both low-latency individual inserts and high-throughput bulk streaming operations.
 
 ## Features
