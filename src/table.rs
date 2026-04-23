@@ -406,7 +406,7 @@ impl Row {
         }
     }
 
-    /// Take binary value at index (safe version with bounds checking)
+    /// Get binary value at index (safe version with bounds checking)
     pub fn get_binary_ref(&self, index: usize) -> Option<&[u8]> {
         if index >= self.values.len() {
             return None;
@@ -414,7 +414,7 @@ impl Row {
         unsafe { self.get_binary_ref_unchecked(index) }
     }
 
-    /// Take binary value at index (unsafe version without bounds checking)
+    /// Get binary value at index (unsafe version without bounds checking)
     /// # Safety
     /// The caller must ensure that `index < self.values.len()`
     pub unsafe fn get_binary_ref_unchecked(&self, index: usize) -> Option<&[u8]> {
@@ -446,7 +446,7 @@ impl Row {
         }
     }
 
-    /// Take string value at index (safe version with bounds checking)
+    /// Get string value at index (safe version with bounds checking)
     pub fn get_string_ref(&self, index: usize) -> Option<&String> {
         if index >= self.values.len() {
             return None;
@@ -454,7 +454,7 @@ impl Row {
         unsafe { self.get_string_ref_unchecked(index) }
     }
 
-    /// Take string value at index (unsafe version without bounds checking)
+    /// Get string value at index (unsafe version without bounds checking)
     /// # Safety
     /// The caller must ensure that `index < self.values.len()`
     pub unsafe fn get_string_ref_unchecked(&self, index: usize) -> Option<&String> {
