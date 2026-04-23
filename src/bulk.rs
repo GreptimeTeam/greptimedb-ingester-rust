@@ -235,15 +235,31 @@ impl BulkStreamWriter {
     }
 
     /// Write rows to the stream using the fixed table schema
+    ///
+    /// When the input `Rows` spans multiple time windows, it is split into
+    /// one request per window. This method waits for all of them and returns
+    /// a single `DoPutResponse` whose `affected_rows` is the sum across all
+    /// windows and whose `request_id` is that of the last submitted request.
     pub async fn write_rows(&mut self, rows: Rows) -> Result<DoPutResponse> {
-        // Use the async implementation and wait for the response
-        let request_id = self.write_rows_async(rows).await?;
-        self.wait_for_response(request_id).await
+        let request_ids = self.write_rows_async(rows).await?;
+
+        let mut total_affected_rows = 0usize;
+        let mut last_request_id = 0;
+        for request_id in request_ids {
+            let response = self.wait_for_response(request_id).await?;
+            total_affected_rows += response.affected_rows();
+            last_request_id = request_id;
+        }
+        Ok(DoPutResponse::new(last_request_id, total_affected_rows))
     }
 
-    /// Submit rows for writing without waiting for response
-    /// Returns a `request_id` that can be used to wait for the specific response
-    pub async fn write_rows_async(&mut self, rows: Rows) -> Result<RequestId> {
+    /// Submit rows for writing without waiting for responses.
+    ///
+    /// When the input `Rows` spans multiple time windows, it is split into
+    /// one request per window. The returned vector contains one `request_id`
+    /// per submitted request, in submission order, each of which can be used
+    /// with `wait_for_response` to retrieve the corresponding result.
+    pub async fn write_rows_async(&mut self, rows: Rows) -> Result<Vec<RequestId>> {
         // Ensure that the rows are not empty
         ensure!(!rows.is_empty(), error::EmptyRowsSnafu);
         // Validate that the rows schema matches the writer's schema
@@ -252,16 +268,13 @@ impl BulkStreamWriter {
         let batches_with_timestamp: Vec<RecordBatchWithTimestamp> = rows.try_into()?;
         ensure!(!batches_with_timestamp.is_empty(), error::EmptyRowsSnafu);
 
-        let mut last_request_id = None;
-
-        // Submit each batch separately with its time range metadata
+        let mut request_ids = Vec::with_capacity(batches_with_timestamp.len());
         for batch_with_ts in batches_with_timestamp {
             let request_id = self.submit_record_batch(batch_with_ts).await?;
-            last_request_id = Some(request_id);
+            request_ids.push(request_id);
         }
 
-        // SAFETY: we've checked batches_with_timestamp is not empty
-        Ok(last_request_id.expect("Should have at least one batch"))
+        Ok(request_ids)
     }
 
     /// Wait for a specific request's response by `request_id`

@@ -264,8 +264,8 @@ async fn test_bulk_stream_writer_parallel() -> Result<()> {
 
     for batch_num in 0..batch_count {
         let rows = create_test_batch_bulk(&bulk_writer, batch_num, batch_size)?;
-        let request_id = bulk_writer.write_rows_async(rows).await?;
-        request_ids.push(request_id);
+        let ids = bulk_writer.write_rows_async(rows).await?;
+        request_ids.extend(ids);
     }
 
     // Wait for all requests to complete

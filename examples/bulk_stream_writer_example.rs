@@ -284,8 +284,8 @@ async fn run_parallel_writes() -> Result<Duration> {
             _ => create_test_rows(batch_num, rows_per_batch, bulk_writer.column_schemas())?,
         };
         match bulk_writer.write_rows_async(rows).await {
-            Ok(request_id) => {
-                request_ids.push(request_id);
+            Ok(ids) => {
+                request_ids.extend(ids);
                 if (batch_num + 1) % 25 == 0 {
                     println!("  Submitted: {}/{} batches", batch_num + 1, batch_count);
                 }
