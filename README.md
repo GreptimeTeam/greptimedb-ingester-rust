@@ -319,11 +319,12 @@ The bulk API supports true parallelism through async request submission:
 use greptimedb_ingester::{BulkStreamWriter, Rows};
 
 async fn example(bulk_writer: &mut BulkStreamWriter, batches: Vec<Rows>) -> greptimedb_ingester::Result<()> {
-    // Submit multiple batches without waiting
+    // Submit multiple batches without waiting. Each call can return multiple
+    // request ids when the rows span more than one time window.
     let mut request_ids = Vec::new();
     for batch in batches {
-        let id = bulk_writer.write_rows_async(batch).await?;
-        request_ids.push(id);
+        let ids = bulk_writer.write_rows_async(batch).await?;
+        request_ids.extend(ids);
     }
 
     // Option 1: Wait for all pending requests

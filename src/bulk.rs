@@ -890,7 +890,10 @@ impl Rows {
 type TimeWindowKey = i64;
 
 /// Record batch with timestamp range metadata
-/// Represents a RecordBatch that belongs to a specific time window
+/// Represents a RecordBatch that belongs to a specific time window.
+///
+/// `start_timestamp` and `end_timestamp` are in the timestamp column's native
+/// unit (as declared in the table schema), not normalized to a single unit.
 #[derive(Debug, Clone)]
 pub struct RecordBatchWithTimestamp {
     batch: RecordBatch,
@@ -908,13 +911,13 @@ impl RecordBatchWithTimestamp {
         }
     }
 
-    /// Get the start timestamp in nanoseconds
+    /// Get the start timestamp, in the timestamp column's native unit
     #[must_use]
     pub fn start_timestamp(&self) -> i64 {
         self.start_timestamp
     }
 
-    /// Get the end timestamp in nanoseconds
+    /// Get the end timestamp, in the timestamp column's native unit
     #[must_use]
     pub fn end_timestamp(&self) -> i64 {
         self.end_timestamp
@@ -961,7 +964,9 @@ pub struct RowBatchBuilder {
     builders: Vec<ArrayBuilderEnum>,
     schema: Arc<Schema>,
     current_rows: usize,
+    /// Minimum timestamp seen, in the timestamp column's native unit
     min_timestamp: i64,
+    /// Maximum timestamp seen, in the timestamp column's native unit
     max_timestamp: i64,
     timestamp_idx: usize,
 }
@@ -1605,6 +1610,33 @@ mod tests {
 
         // Verify row count
         assert_eq!(builder.len(), 4);
+    }
+
+    #[test]
+    fn test_record_batch_with_timestamp_preserves_native_unit() {
+        // `start_timestamp`/`end_timestamp` on RecordBatchWithTimestamp are in the
+        // timestamp column's native unit (no normalization to nanoseconds).
+        let cases: &[(ColumnDataType, i64, i64)] = &[
+            (ColumnDataType::TimestampSecond, 1, 5),
+            (ColumnDataType::TimestampMillisecond, 1_000, 2_500),
+            (ColumnDataType::TimestampMicrosecond, 1_000, 2_500),
+            (ColumnDataType::TimestampNanosecond, 1_000, 2_500),
+        ];
+
+        for &(ts_type, raw_min, raw_max) in cases {
+            let schema = create_timestamp_schema(ts_type);
+            let mut rows = Rows::new(&schema, 4).expect("Failed to create rows");
+            rows.add_row(create_row(ts_type, raw_min, 10)).unwrap();
+            rows.add_row(create_row(ts_type, raw_max, 20)).unwrap();
+
+            let batches: Vec<RecordBatchWithTimestamp> =
+                rows.try_into().expect("Failed to convert rows");
+            assert_eq!(batches.len(), 1, "ts_type={:?}", ts_type);
+
+            let batch = &batches[0];
+            assert_eq!(batch.start_timestamp(), raw_min, "ts_type={:?}", ts_type);
+            assert_eq!(batch.end_timestamp(), raw_max, "ts_type={:?}", ts_type);
+        }
     }
 
     // Helper function to create a simple schema with timestamp and value columns

@@ -21,8 +21,9 @@ use crate::error;
 /// The metadata for "DoPut" requests and responses.
 ///
 /// Contains a "request_id" for coordinating requests and responses in the streams.
-/// Optionally includes time range metadata (start_timestamp and end_timestamp in nanoseconds)
-/// for time-windowed batches.
+/// Optionally includes time range metadata (`start_timestamp` and `end_timestamp`) for
+/// time-windowed batches; these are expressed in the timestamp column's native unit,
+/// matching the unit declared in the table schema.
 /// Client can set a unique request id in this metadata, and the server will return the same id in
 /// the corresponding response. In doing so, a client can know how to do with its pending requests.
 #[derive(Serialize, Deserialize)]
@@ -50,13 +51,13 @@ impl DoPutMetadata {
         self.request_id
     }
 
-    /// Get the start timestamp in nanoseconds, if available
+    /// Get the start timestamp in the timestamp column's native unit, if available
     #[must_use]
     pub fn start_timestamp(&self) -> Option<i64> {
         self.start_timestamp
     }
 
-    /// Get the end timestamp in nanoseconds, if available
+    /// Get the end timestamp in the timestamp column's native unit, if available
     #[must_use]
     pub fn end_timestamp(&self) -> Option<i64> {
         self.end_timestamp
