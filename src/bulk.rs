@@ -840,7 +840,8 @@ impl Rows {
     /// Add a row to the collection using move semantics
     ///
     /// Rows are automatically partitioned into time windows based on their timestamp.
-    /// If no timestamp column exists, rows are added to a single default window.
+    /// A timestamp column is required; if it is missing when building the inserter,
+    /// an error is returned.
     pub fn add_row(&mut self, row: Row) -> Result<()> {
         // Validate column count matches schema
         ensure!(
