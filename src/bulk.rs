@@ -1018,7 +1018,7 @@ impl RowBatchBuilder {
                 self.max_timestamp = self.max_timestamp.max(ts);
                 self.min_timestamp = self.min_timestamp.min(ts);
             }
-            builder.append_values_from_rows(row, col_idx)?;
+            builder.append_value_from_row(row, col_idx)?;
         }
         self.current_rows += 1;
         Ok(())
@@ -1043,7 +1043,7 @@ impl RowBatchBuilder {
 
 /// Trait for type-erased array builders
 trait ArrayBuilder {
-    fn append_values_from_rows(&mut self, rows: &[&Row], col_idx: usize) -> Result<()>;
+    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()>;
 }
 
 #[derive(Debug)]
@@ -1074,45 +1074,44 @@ enum ArrayBuilderEnum {
 }
 
 impl ArrayBuilderEnum {
-    fn append_values_from_rows(&mut self, row: &Row, col_idx: usize) -> Result<()> {
-        let rows = &[row];
+    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
         match self {
-            ArrayBuilderEnum::Boolean(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Int8(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Int16(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Int32(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Int64(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::UInt8(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::UInt16(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::UInt32(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::UInt64(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Float32(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Float64(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::String(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Binary(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Decimal128(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Date(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::Boolean(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Int8(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Int16(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Int32(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Int64(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::UInt8(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::UInt16(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::UInt32(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::UInt64(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Float32(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Float64(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::String(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Binary(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Decimal128(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Date(builder) => builder.append_value_from_row(row, col_idx),
             ArrayBuilderEnum::TimestampSecond(builder) => {
-                builder.append_values_from_rows(rows, col_idx)
+                builder.append_value_from_row(row, col_idx)
             }
             ArrayBuilderEnum::TimestampMillisecond(builder) => {
-                builder.append_values_from_rows(rows, col_idx)
+                builder.append_value_from_row(row, col_idx)
             }
             ArrayBuilderEnum::TimestampMicrosecond(builder) => {
-                builder.append_values_from_rows(rows, col_idx)
+                builder.append_value_from_row(row, col_idx)
             }
             ArrayBuilderEnum::TimestampNanosecond(builder) => {
-                builder.append_values_from_rows(rows, col_idx)
+                builder.append_value_from_row(row, col_idx)
             }
-            ArrayBuilderEnum::TimeSecond(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::TimeSecond(builder) => builder.append_value_from_row(row, col_idx),
             ArrayBuilderEnum::TimeMillisecond(builder) => {
-                builder.append_values_from_rows(rows, col_idx)
+                builder.append_value_from_row(row, col_idx)
             }
             ArrayBuilderEnum::TimeMicrosecond(builder) => {
-                builder.append_values_from_rows(rows, col_idx)
+                builder.append_value_from_row(row, col_idx)
             }
             ArrayBuilderEnum::TimeNanosecond(builder) => {
-                builder.append_values_from_rows(rows, col_idx)
+                builder.append_value_from_row(row, col_idx)
             }
         }
     }
@@ -1230,11 +1229,9 @@ fn create_array_builder(
 macro_rules! impl_arrow_builder {
     ($builder_type:ty, $getter:ident, $value_type:ty) => {
         impl ArrayBuilder for $builder_type {
-            fn append_values_from_rows(&mut self, rows: &[&Row], col_idx: usize) -> Result<()> {
-                for row in rows {
-                    // Use unchecked version for performance - col_idx is guaranteed to be valid by schema
-                    self.append_option(unsafe { row.$getter(col_idx) });
-                }
+            fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
+                // Use unchecked version for performance - col_idx is guaranteed to be valid by schema
+                self.append_option(unsafe { row.$getter(col_idx) });
                 Ok(())
             }
         }
