@@ -939,10 +939,9 @@ impl TryFrom<Rows> for Vec<RecordBatchWithTimestamp> {
         // Build RecordBatch for each time window
         let mut batches = Vec::with_capacity(rows.time_windows.len());
 
-        // Collect window keys and sort them for consistent ordering
         for builder in rows.time_windows.into_values() {
             // Skip empty windows
-            if builder.len() == 0 {
+            if builder.is_empty() {
                 continue;
             }
 
@@ -1038,6 +1037,11 @@ impl RowBatchBuilder {
     /// Get the current number of rows in the builder
     fn len(&self) -> usize {
         self.current_rows
+    }
+
+    /// Check if the builder is empty (has no rows)
+    fn is_empty(&self) -> bool {
+        self.current_rows == 0
     }
 }
 
