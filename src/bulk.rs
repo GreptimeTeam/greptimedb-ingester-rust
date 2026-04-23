@@ -1005,7 +1005,10 @@ impl RowBatchBuilder {
     fn add_row(&mut self, row: &Row) -> Result<()> {
         for (col_idx, builder) in self.builders.iter_mut().enumerate() {
             if col_idx == self.timestamp_idx {
-                let ts = unsafe { row.get_timestamp_unchecked(col_idx).unwrap() };
+                let ts = unsafe {
+                    row.get_timestamp_unchecked(col_idx)
+                        .context(error::NullTimestampSnafu)?
+                };
                 self.max_timestamp = self.max_timestamp.max(ts);
                 self.min_timestamp = self.min_timestamp.min(ts);
             }
