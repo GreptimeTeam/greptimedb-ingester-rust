@@ -17,6 +17,7 @@
 //! This module provides a user-friendly API for bulk inserting data into `GreptimeDB`,
 //! abstracting away the low-level Arrow Flight details.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -234,24 +235,46 @@ impl BulkStreamWriter {
     }
 
     /// Write rows to the stream using the fixed table schema
+    ///
+    /// When the input `Rows` spans multiple time windows, it is split into
+    /// one request per window. This method waits for all of them and returns
+    /// a single `DoPutResponse` whose `affected_rows` is the sum across all
+    /// windows and whose `request_id` is that of the last submitted request.
     pub async fn write_rows(&mut self, rows: Rows) -> Result<DoPutResponse> {
-        // Use the async implementation and wait for the response
-        let request_id = self.write_rows_async(rows).await?;
-        self.wait_for_response(request_id).await
+        let request_ids = self.write_rows_async(rows).await?;
+
+        let mut total_affected_rows = 0usize;
+        let mut last_request_id = 0;
+        for request_id in request_ids {
+            let response = self.wait_for_response(request_id).await?;
+            total_affected_rows += response.affected_rows();
+            last_request_id = request_id;
+        }
+        Ok(DoPutResponse::new(last_request_id, total_affected_rows))
     }
 
-    /// Submit rows for writing without waiting for response
-    /// Returns a `request_id` that can be used to wait for the specific response
-    pub async fn write_rows_async(&mut self, rows: Rows) -> Result<RequestId> {
+    /// Submit rows for writing without waiting for responses.
+    ///
+    /// When the input `Rows` spans multiple time windows, it is split into
+    /// one request per window. The returned vector contains one `request_id`
+    /// per submitted request, in submission order, each of which can be used
+    /// with `wait_for_response` to retrieve the corresponding result.
+    pub async fn write_rows_async(&mut self, rows: Rows) -> Result<Vec<RequestId>> {
         // Ensure that the rows are not empty
         ensure!(!rows.is_empty(), error::EmptyRowsSnafu);
         // Validate that the rows schema matches the writer's schema
         self.validate_rows_schema(&rows)?;
 
-        let record_batch = RecordBatch::try_from(rows)?; // Zero-cost conversion
-        let request_id = self.submit_record_batch(record_batch).await?;
+        let batches_with_timestamp: Vec<RecordBatchWithTimestamp> = rows.try_into()?;
+        ensure!(!batches_with_timestamp.is_empty(), error::EmptyRowsSnafu);
 
-        Ok(request_id)
+        let mut request_ids = Vec::with_capacity(batches_with_timestamp.len());
+        for batch_with_ts in batches_with_timestamp {
+            let request_id = self.submit_record_batch(batch_with_ts).await?;
+            request_ids.push(request_id);
+        }
+
+        Ok(request_ids)
     }
 
     /// Wait for a specific request's response by `request_id`
@@ -407,13 +430,8 @@ impl BulkStreamWriter {
 
     /// Allocate a new rows buffer that is bound to this writer's schema
     /// This ensures schema compatibility and provides optimal performance
-    pub fn alloc_rows_buffer(&self, capacity: usize, row_buffer_size: usize) -> Result<Rows> {
-        Rows::with_arrow_schema(
-            self.column_schemas(),
-            self.arrow_schema.clone(),
-            capacity,
-            row_buffer_size,
-        )
+    pub fn alloc_rows_buffer(&self, capacity: usize) -> Result<Rows> {
+        Rows::with_arrow_schema(self.column_schemas(), self.arrow_schema.clone(), capacity)
     }
 
     /// Create a new Row builder that is compatible with this writer's schema
@@ -488,13 +506,17 @@ impl BulkStreamWriter {
         Ok(())
     }
 
-    /// Submit a record batch without waiting for response
+    /// Submit a record batch with timestamp range without waiting for response
     /// Returns the `request_id` for later tracking
-    async fn submit_record_batch(&mut self, batch: RecordBatch) -> Result<RequestId> {
+    async fn submit_record_batch(
+        &mut self,
+        batch_with_ts: RecordBatchWithTimestamp,
+    ) -> Result<RequestId> {
         // Send schema first if not already sent
         if !self.schema_sent {
+            let batch = batch_with_ts.batch();
             let mut schema_data = self.encoder.encode(FlightMessage::Schema(batch.schema()));
-            let metadata = DoPutMetadata::new(0);
+            let metadata = DoPutMetadata::new(0, None, None);
             schema_data.app_metadata = serde_json::to_vec(&metadata)
                 .context(error::SerializeMetadataSnafu)?
                 .into();
@@ -533,11 +555,16 @@ impl BulkStreamWriter {
             self.process_pending_responses().await?;
         }
 
-        // Send the request
+        // Send the request with time range metadata
         let request_id = self.next_request_id();
+        let batch = batch_with_ts.batch().clone();
         let message = FlightMessage::RecordBatch(batch);
         let mut data = self.encoder.encode(message);
-        let metadata = DoPutMetadata::new(request_id);
+        let metadata = DoPutMetadata::new(
+            request_id,
+            Some(batch_with_ts.start_timestamp()),
+            Some(batch_with_ts.end_timestamp()),
+        );
         data.app_metadata = serde_json::to_vec(&metadata)
             .context(error::SerializeMetadataSnafu)?
             .into();
@@ -700,10 +727,10 @@ fn column_to_arrow_data_type(column: &Column) -> Result<DataType> {
         ColumnDataType::TimestampNanosecond => DataType::Timestamp(TimeUnit::Nanosecond, None),
 
         // Time types (without date)
-        ColumnDataType::TimeSecond => DataType::Time32(arrow_schema::TimeUnit::Second),
-        ColumnDataType::TimeMillisecond => DataType::Time32(arrow_schema::TimeUnit::Millisecond),
-        ColumnDataType::TimeMicrosecond => DataType::Time64(arrow_schema::TimeUnit::Microsecond),
-        ColumnDataType::TimeNanosecond => DataType::Time64(arrow_schema::TimeUnit::Nanosecond),
+        ColumnDataType::TimeSecond => DataType::Time32(TimeUnit::Second),
+        ColumnDataType::TimeMillisecond => DataType::Time32(TimeUnit::Millisecond),
+        ColumnDataType::TimeMicrosecond => DataType::Time64(TimeUnit::Microsecond),
+        ColumnDataType::TimeNanosecond => DataType::Time64(TimeUnit::Nanosecond),
 
         // Decimal type - extract precision and scale from column extension
         ColumnDataType::Decimal128 => {
@@ -728,89 +755,94 @@ fn column_to_arrow_data_type(column: &Column) -> Result<DataType> {
     })
 }
 
-/// Represents the underlying data storage for `Rows`.
-/// This can be either a `RowBatchBuilder` for building rows,
-/// or a pre-existing `RecordBatch`.
-enum RowsData {
-    Builder(RowBatchBuilder),
-    RecordBatch(RecordBatch),
-}
-
 /// High-level rows abstraction with buffered batch conversion
 /// This provides a user-friendly API while maintaining optimal performance
+///
+/// Supports automatic time windowing: rows are partitioned by timestamp into separate
+/// time windows. Each window is converted to a separate RecordBatch with time range metadata.
+/// Default time window duration is 1 hour.
+#[derive(Debug)]
 pub struct Rows {
-    data: RowsData,
     schema: Arc<Schema>,
+    column_schemas: Vec<Column>, // Store column schemas for creating window builders
     column_count: usize,
-    // Row buffering for improved performance
-    row_buffer: Vec<Row>,
-    buffer_size: usize,
+    // Time windowing configuration
+    time_window_duration: i64,
+    timestamp_column_index: usize,
+    time_windows: HashMap<TimeWindowKey, RowBatchBuilder>,
+    default_capacity: usize,
 }
 
 impl Rows {
     /// Create a new Rows collection with the given schema and capacity
-    pub fn new(column_schemas: &[Column], capacity: usize, row_buffer_size: usize) -> Result<Self> {
+    ///
+    /// Automatically detects the timestamp column (first column with SemanticType::Timestamp)
+    /// and initializes time windowing with a default duration of 1 hour.
+    pub fn new(column_schemas: &[Column], capacity: usize) -> Result<Self> {
         let builder = RowBatchBuilder::new(column_schemas, capacity)?;
         let schema = builder.schema.clone();
 
+        // Find timestamp column index
+        let (timestamp_column_index, time_window_duration) =
+            find_timestamp_index_and_window(column_schemas)?;
+
         Ok(Self {
-            data: RowsData::Builder(builder),
             schema,
+            column_schemas: column_schemas.to_vec(),
             column_count: column_schemas.len(),
-            row_buffer: Vec::with_capacity(row_buffer_size),
-            buffer_size: row_buffer_size,
+            time_window_duration,
+            timestamp_column_index,
+            time_windows: HashMap::new(),
+            default_capacity: capacity,
         })
     }
 
     /// Create a new Rows collection with a pre-computed Arrow schema
+    ///
+    /// Automatically detects the timestamp column (first column with SemanticType::Timestamp)
+    /// and initializes time windowing with a default duration of 1 hour.
     fn with_arrow_schema(
         column_schemas: &[Column],
         arrow_schema: Arc<Schema>,
         capacity: usize,
-        row_buffer_size: usize,
     ) -> Result<Self> {
-        let builder =
-            RowBatchBuilder::with_arrow_schema(column_schemas, arrow_schema.clone(), capacity)?;
+        // Find timestamp column index
+        let (timestamp_column_index, time_window_duration) =
+            find_timestamp_index_and_window(column_schemas)?;
 
         Ok(Self {
-            data: RowsData::Builder(builder),
             schema: arrow_schema,
+            column_schemas: column_schemas.to_vec(),
             column_count: column_schemas.len(),
-            row_buffer: Vec::with_capacity(row_buffer_size),
-            buffer_size: row_buffer_size,
+            time_window_duration,
+            timestamp_column_index,
+            time_windows: HashMap::new(),
+            default_capacity: capacity,
         })
     }
 
-    /// Create a `Rows` instance from a pre-existing `RecordBatch`.
-    ///
-    /// This is useful when you already have data in `RecordBatch` format and want to
-    /// send it using the `BulkStreamWriter`. This avoids the overhead of converting
-    /// the `RecordBatch` back to individual rows.
-    ///
-    /// # Note
-    ///
-    /// Once a `Rows` object is created from a `RecordBatch`, you cannot add more
-    /// rows to it.
-    pub fn from_record_batch(batch: RecordBatch) -> Result<Self> {
-        let schema = batch.schema();
-        let column_count = batch.num_columns();
-        Ok(Self {
-            data: RowsData::RecordBatch(batch),
-            schema,
-            column_count,
-            row_buffer: Vec::new(), // empty
-            buffer_size: 0,         // not applicable
-        })
+    /// Calculate the time window key for a given timestamp in nanoseconds
+    fn calculate_window_key(&self, timestamp: i64) -> TimeWindowKey {
+        timestamp
+            .checked_div_euclid(self.time_window_duration)
+            .and_then(|v| v.checked_mul(self.time_window_duration))
+            .unwrap_or(i64::MIN)
+    }
+
+    /// Extract timestamp from a row.
+    /// Returns an error if timestamp column is missing or null
+    fn extract_timestamp(&self, row: &Row) -> Result<i64> {
+        // Get the timestamp value (raw value in its native unit)
+        unsafe { row.get_timestamp_unchecked(self.timestamp_column_index) }
+            .context(error::NullTimestampSnafu)
     }
 
     /// Add a row to the collection using move semantics
+    ///
+    /// Rows are automatically partitioned into time windows based on their timestamp.
+    /// A timestamp column is required; if it is missing when building the inserter,
+    /// an error is returned.
     pub fn add_row(&mut self, row: Row) -> Result<()> {
-        // Ensure we are in builder mode
-        ensure!(
-            matches!(self.data, RowsData::Builder(_)),
-            error::AddRowToBuiltBatchSnafu,
-        );
-
         // Validate column count matches schema
         ensure!(
             row.len() == self.column_count,
@@ -820,38 +852,24 @@ impl Rows {
             }
         );
 
-        self.row_buffer.push(row);
+        let window_key = self.calculate_window_key(self.extract_timestamp(&row)?);
+        let mut binding = self.time_windows.entry(window_key);
+        let buffer = match binding {
+            Entry::Occupied(ref mut e) => e.get_mut(),
+            Entry::Vacant(v) => v.insert(RowBatchBuilder::new(
+                &self.column_schemas,
+                Self::window_initial_capacity(self.default_capacity),
+            )?),
+        };
 
-        // If buffer is full, flush it to a RecordBatch
-        if self.row_buffer.len() >= self.buffer_size {
-            self.flush_buffer()?;
-        }
-
-        Ok(())
-    }
-
-    /// Flush the current row buffer to the builder
-    fn flush_buffer(&mut self) -> Result<()> {
-        if self.row_buffer.is_empty() {
-            return Ok(());
-        }
-
-        if let RowsData::Builder(ref mut builder) = self.data {
-            // Process all rows in the buffer at once for better performance
-            let rows = std::mem::take(&mut self.row_buffer);
-            builder.add_rows(rows)?;
-        }
-
+        buffer.add_row(&row)?;
         Ok(())
     }
 
     /// Get the current number of rows
     #[must_use]
     pub fn len(&self) -> usize {
-        match &self.data {
-            RowsData::RecordBatch(batch) => batch.num_rows(),
-            RowsData::Builder(builder) => builder.len() + self.row_buffer.len(),
-        }
+        self.time_windows.values().map(|b| b.len()).sum()
     }
 
     /// Check if the collection is empty
@@ -867,91 +885,146 @@ impl Rows {
     pub fn schema(&self) -> &Schema {
         &self.schema
     }
+
+    fn window_initial_capacity(default_capacity: usize) -> usize {
+        default_capacity.min(MAX_WINDOW_INITIAL_CAPACITY)
+    }
 }
 
-/// Convert Rows to RecordBatch, handling buffered data
-impl TryFrom<Rows> for RecordBatch {
+/// Time window key type - represents window start time in nanoseconds
+type TimeWindowKey = i64;
+const MAX_WINDOW_INITIAL_CAPACITY: usize = 1024;
+
+/// Record batch with timestamp range metadata
+/// Represents a RecordBatch that belongs to a specific time window.
+///
+/// `start_timestamp` and `end_timestamp` are in the timestamp column's native
+/// unit (as declared in the table schema), not normalized to a single unit.
+#[derive(Debug, Clone)]
+pub struct RecordBatchWithTimestamp {
+    batch: RecordBatch,
+    start_timestamp: i64,
+    end_timestamp: i64,
+}
+
+impl RecordBatchWithTimestamp {
+    /// Create a new RecordBatchWithTimestamp
+    pub fn new(batch: RecordBatch, start_timestamp: i64, end_timestamp: i64) -> Self {
+        Self {
+            batch,
+            start_timestamp,
+            end_timestamp,
+        }
+    }
+
+    /// Get the start timestamp, in the timestamp column's native unit
+    #[must_use]
+    pub fn start_timestamp(&self) -> i64 {
+        self.start_timestamp
+    }
+
+    /// Get the end timestamp, in the timestamp column's native unit
+    #[must_use]
+    pub fn end_timestamp(&self) -> i64 {
+        self.end_timestamp
+    }
+
+    /// Get the RecordBatch
+    #[must_use]
+    pub fn batch(&self) -> &RecordBatch {
+        &self.batch
+    }
+}
+
+/// Convert Rows to Vec<RecordBatchWithTimestamp>, handling buffered data and time windowing
+impl TryFrom<Rows> for Vec<RecordBatchWithTimestamp> {
     type Error = crate::Error;
 
-    fn try_from(mut rows: Rows) -> Result<Self> {
-        // Flush any remaining buffered rows to the builder
-        rows.flush_buffer()?;
+    fn try_from(rows: Rows) -> Result<Self> {
+        // Build RecordBatch for each time window
+        let mut batches = Vec::with_capacity(rows.time_windows.len());
 
-        match rows.data {
-            RowsData::RecordBatch(batch) => {
-                // If we have a pre-made batch, just return it.
-                // Ensure no pending rows in buffer, which would be a logic error.
-                ensure!(rows.row_buffer.is_empty(), error::UnflushedRowsSnafu);
-                Ok(batch)
+        for builder in rows.time_windows.into_values() {
+            // Skip empty windows
+            if builder.is_empty() {
+                continue;
             }
-            RowsData::Builder(builder) => {
-                // Build the single RecordBatch
-                builder.build()
-            }
+
+            let min_ts = builder.min_timestamp;
+            let max_ts = builder.max_timestamp;
+            debug_assert!(max_ts >= min_ts);
+            let batch = builder.build()?;
+
+            batches.push(RecordBatchWithTimestamp::new(batch, min_ts, max_ts));
         }
+        Ok(batches)
     }
 }
 
 /// Efficient batch builder that directly constructs Arrow arrays
 /// This avoids the overhead of creating intermediate Row objects and converting them
 /// Arrow builders automatically manage capacity and expand as needed
+#[derive(Debug)]
 pub struct RowBatchBuilder {
     builders: Vec<ArrayBuilderEnum>,
     schema: Arc<Schema>,
     current_rows: usize,
+    /// Minimum timestamp seen, in the timestamp column's native unit
+    min_timestamp: i64,
+    /// Maximum timestamp seen, in the timestamp column's native unit
+    max_timestamp: i64,
+    timestamp_idx: usize,
 }
 
 impl RowBatchBuilder {
     /// Create a new RowBatchBuilder with the given schema and capacity
     fn new(column_schemas: &[Column], capacity: usize) -> Result<Self> {
-        let fields: Result<Vec<Field>> = column_schemas
-            .iter()
-            .map(|col| {
-                let nullable = col.semantic_type != SemanticType::Timestamp;
-                column_to_arrow_data_type(col)
-                    .map(|data_type| Field::new(&col.name, data_type, nullable))
-            })
-            .collect();
-        let schema = Arc::new(Schema::new(fields?));
+        let mut fields = Vec::with_capacity(column_schemas.len());
+        let mut timestamp_index_opt = None;
+        for (idx, col) in column_schemas.iter().enumerate() {
+            let mut nullable = true;
+            if col.semantic_type == SemanticType::Timestamp {
+                nullable = false;
+                timestamp_index_opt = Some(idx);
+            }
+
+            let field = column_to_arrow_data_type(col)
+                .map(|data_type| Field::new(&col.name, data_type, nullable))?;
+            fields.push(field);
+        }
+        let schema = Arc::new(Schema::new(fields));
 
         let builders: Result<Vec<ArrayBuilderEnum>> = column_schemas
             .iter()
             .enumerate()
             .map(|(col_idx, col)| create_array_builder(col, capacity, col_idx))
             .collect();
+        let timestamp_idx = timestamp_index_opt.context(error::MissingTimestampColumnSnafu)?;
 
         Ok(Self {
             builders: builders?,
             schema,
             current_rows: 0,
-        })
-    }
-
-    /// Create a new RowBatchBuilder with a pre-computed Arrow schema
-    fn with_arrow_schema(
-        column_schemas: &[Column],
-        schema: Arc<Schema>,
-        capacity: usize,
-    ) -> Result<Self> {
-        let builders: Result<Vec<ArrayBuilderEnum>> = column_schemas
-            .iter()
-            .enumerate()
-            .map(|(col_idx, col)| create_array_builder(col, capacity, col_idx))
-            .collect();
-
-        Ok(Self {
-            builders: builders?,
-            schema,
-            current_rows: 0,
+            min_timestamp: i64::MAX,
+            max_timestamp: i64::MIN,
+            timestamp_idx,
         })
     }
 
     /// Add multiple rows to the batch builder using batch operations
-    fn add_rows(&mut self, mut rows: Vec<Row>) -> Result<()> {
+    fn add_row(&mut self, row: &Row) -> Result<()> {
         for (col_idx, builder) in self.builders.iter_mut().enumerate() {
-            builder.append_values_from_rows(&mut rows, col_idx)?;
+            if col_idx == self.timestamp_idx {
+                let ts = unsafe {
+                    row.get_timestamp_unchecked(col_idx)
+                        .context(error::NullTimestampSnafu)?
+                };
+                self.max_timestamp = self.max_timestamp.max(ts);
+                self.min_timestamp = self.min_timestamp.min(ts);
+            }
+            builder.append_value_from_row(row, col_idx)?;
         }
-        self.current_rows += rows.len();
+        self.current_rows += 1;
         Ok(())
     }
 
@@ -970,13 +1043,19 @@ impl RowBatchBuilder {
     fn len(&self) -> usize {
         self.current_rows
     }
+
+    /// Check if the builder is empty (has no rows)
+    fn is_empty(&self) -> bool {
+        self.current_rows == 0
+    }
 }
 
 /// Trait for type-erased array builders
 trait ArrayBuilder {
-    fn append_values_from_rows(&mut self, rows: &mut [Row], col_idx: usize) -> Result<()>;
+    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()>;
 }
 
+#[derive(Debug)]
 enum ArrayBuilderEnum {
     Boolean(BooleanBuilder),
     Int8(Int8Builder),
@@ -1004,44 +1083,44 @@ enum ArrayBuilderEnum {
 }
 
 impl ArrayBuilderEnum {
-    fn append_values_from_rows(&mut self, rows: &mut [Row], col_idx: usize) -> Result<()> {
+    fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
         match self {
-            ArrayBuilderEnum::Boolean(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Int8(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Int16(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Int32(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Int64(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::UInt8(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::UInt16(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::UInt32(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::UInt64(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Float32(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Float64(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::String(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Binary(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Decimal128(builder) => builder.append_values_from_rows(rows, col_idx),
-            ArrayBuilderEnum::Date(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::Boolean(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Int8(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Int16(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Int32(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Int64(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::UInt8(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::UInt16(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::UInt32(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::UInt64(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Float32(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Float64(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::String(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Binary(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Decimal128(builder) => builder.append_value_from_row(row, col_idx),
+            ArrayBuilderEnum::Date(builder) => builder.append_value_from_row(row, col_idx),
             ArrayBuilderEnum::TimestampSecond(builder) => {
-                builder.append_values_from_rows(rows, col_idx)
+                builder.append_value_from_row(row, col_idx)
             }
             ArrayBuilderEnum::TimestampMillisecond(builder) => {
-                builder.append_values_from_rows(rows, col_idx)
+                builder.append_value_from_row(row, col_idx)
             }
             ArrayBuilderEnum::TimestampMicrosecond(builder) => {
-                builder.append_values_from_rows(rows, col_idx)
+                builder.append_value_from_row(row, col_idx)
             }
             ArrayBuilderEnum::TimestampNanosecond(builder) => {
-                builder.append_values_from_rows(rows, col_idx)
+                builder.append_value_from_row(row, col_idx)
             }
-            ArrayBuilderEnum::TimeSecond(builder) => builder.append_values_from_rows(rows, col_idx),
+            ArrayBuilderEnum::TimeSecond(builder) => builder.append_value_from_row(row, col_idx),
             ArrayBuilderEnum::TimeMillisecond(builder) => {
-                builder.append_values_from_rows(rows, col_idx)
+                builder.append_value_from_row(row, col_idx)
             }
             ArrayBuilderEnum::TimeMicrosecond(builder) => {
-                builder.append_values_from_rows(rows, col_idx)
+                builder.append_value_from_row(row, col_idx)
             }
             ArrayBuilderEnum::TimeNanosecond(builder) => {
-                builder.append_values_from_rows(rows, col_idx)
+                builder.append_value_from_row(row, col_idx)
             }
         }
     }
@@ -1140,7 +1219,7 @@ fn create_array_builder(
 
             ArrayBuilderEnum::Decimal128(
                 Decimal128Builder::with_capacity(capacity)
-                    .with_data_type(arrow_schema::DataType::Decimal128(precision, scale)),
+                    .with_data_type(DataType::Decimal128(precision, scale)),
             )
         }
         ColumnDataType::Binary | ColumnDataType::Json => {
@@ -1159,11 +1238,9 @@ fn create_array_builder(
 macro_rules! impl_arrow_builder {
     ($builder_type:ty, $getter:ident, $value_type:ty) => {
         impl ArrayBuilder for $builder_type {
-            fn append_values_from_rows(&mut self, rows: &mut [Row], col_idx: usize) -> Result<()> {
-                for row in rows {
-                    // Use unchecked version for performance - col_idx is guaranteed to be valid by schema
-                    self.append_option(unsafe { row.$getter(col_idx) });
-                }
+            fn append_value_from_row(&mut self, row: &Row, col_idx: usize) -> Result<()> {
+                // Use unchecked version for performance - col_idx is guaranteed to be valid by schema
+                self.append_option(unsafe { row.$getter(col_idx) });
                 Ok(())
             }
         }
@@ -1202,8 +1279,8 @@ impl_arrow_builder!(Date32Builder, get_date_unchecked, i32);
 impl_arrow_builder!(Decimal128Builder, get_decimal128_unchecked, i128);
 
 // String and Binary types
-impl_arrow_builder!(StringBuilder, take_string_unchecked, String);
-impl_arrow_builder!(BinaryBuilder, take_binary_unchecked, Vec<u8>);
+impl_arrow_builder!(StringBuilder, get_string_ref_unchecked, String);
+impl_arrow_builder!(BinaryBuilder, get_binary_ref_unchecked, Vec<u8>);
 
 /// A helper for building rows with schema-aware field access
 /// This prevents common mistakes like incorrect field order or types
@@ -1275,12 +1352,34 @@ impl<'a> RowBuilder<'a> {
             }
         }
 
-        Ok(Row::new().add_values(row_values))
+        Ok(Row::from_values(row_values))
     }
 }
 
 // Re-export the proto ColumnDataType for convenience
 pub use crate::api::v1::ColumnDataType as ColumnType;
+
+fn find_timestamp_index_and_window(column_schemas: &[Column]) -> Result<(usize, i64)> {
+    let (timestamp_column_index, timestamp_type) = column_schemas
+        .iter()
+        .enumerate()
+        .find(|(_, col)| col.semantic_type == SemanticType::Timestamp)
+        .context(error::MissingTimestampColumnSnafu)?;
+
+    let time_window_duration = match timestamp_type.data_type {
+        ColumnDataType::TimestampSecond => 3600i64,
+        ColumnDataType::TimestampMillisecond => 3600i64 * 1000,
+        ColumnDataType::Datetime | ColumnDataType::TimestampMicrosecond => 3600i64 * 1000 * 1000,
+        ColumnDataType::TimestampNanosecond => 3600i64 * 1000 * 1000 * 1000,
+        other => {
+            return error::InvalidTimestampTypeSnafu {
+                data_type: format!("{:?}", other),
+            }
+            .fail()
+        }
+    };
+    Ok((timestamp_column_index, time_window_duration))
+}
 
 #[cfg(test)]
 mod tests {
@@ -1329,56 +1428,19 @@ mod tests {
         ];
 
         // Test 1: Compatible rows should work
-        let rows1 = Rows::new(&schema1, 10, 5).expect("Failed to create rows1");
+        let rows1 = Rows::new(&schema1, 10).expect("Failed to create rows1");
 
         // Test 2: Incompatible rows should fail validation
-        let rows2 = Rows::new(&schema2, 10, 5).expect("Failed to create rows2");
+        let rows2_err_msg = Rows::new(&schema2, 10).unwrap_err().to_string();
 
         // Mock the validation (since we can't easily create a BulkStreamWriter in tests)
         // In practice, this would be tested with a real BulkStreamWriter
         assert_eq!(rows1.schema().fields().len(), 3);
-        assert_eq!(rows2.schema().fields().len(), 2);
-
-        // The actual schema validation would happen in validate_rows_schema()
-        // which checks that field names and types match exactly
-    }
-
-    #[test]
-    fn test_rows_creation_and_capacity() {
-        let schema = vec![
-            Column {
-                name: "id".to_string(),
-                data_type: ColumnDataType::Int64,
-                semantic_type: SemanticType::Field,
-                data_type_extension: None,
-            },
-            Column {
-                name: "message".to_string(),
-                data_type: ColumnDataType::String,
-                semantic_type: SemanticType::Field,
-                data_type_extension: None,
-            },
-        ];
-
-        let mut rows = Rows::new(&schema, 5, 5).expect("Failed to create rows");
-
-        // Test initial state
-        assert_eq!(rows.len(), 0);
-        assert!(rows.is_empty());
-
-        // Add some rows
-        let row1 = crate::table::Row::new()
-            .add_values(vec![Value::Int64(1), Value::String("first".to_string())]);
-
-        let row2 = crate::table::Row::new()
-            .add_values(vec![Value::Int64(2), Value::String("second".to_string())]);
-
-        rows.add_row(row1).expect("Failed to add row1");
-        rows.add_row(row2).expect("Failed to add row2");
-
-        // Test state after adding rows
-        assert_eq!(rows.len(), 2);
-        assert!(!rows.is_empty());
+        assert!(
+            rows2_err_msg.contains("Missing timestamp column in schema"),
+            "Actual: {}",
+            rows2_err_msg
+        );
     }
 
     #[test]
@@ -1399,21 +1461,12 @@ mod tests {
             },
         ];
 
-        let mut rows = Rows::new(&schema, 5, 5).expect("Failed to create rows");
+        let mut rows = Rows::new(&schema, 5).expect("Failed to create rows");
 
         // Add a row with null timestamp (should cause error when converting to RecordBatch)
-        let row_with_null_timestamp =
-            crate::table::Row::new().add_values(vec![Value::Null, Value::Int64(42)]);
+        let row_with_null_timestamp = Row::new().add_values(vec![Value::Null, Value::Int64(42)]);
 
-        rows.add_row(row_with_null_timestamp)
-            .expect("Failed to add row");
-
-        // Converting to RecordBatch should fail because timestamp is null but field is non-nullable
-        let result = RecordBatch::try_from(rows);
-        assert!(
-            result.is_err(),
-            "Should fail when timestamp field contains null value"
-        );
+        assert!(rows.add_row(row_with_null_timestamp).is_err());
     }
 
     #[test]
@@ -1434,7 +1487,7 @@ mod tests {
             },
         ];
 
-        let mut rows = Rows::new(&schema, 5, 5).expect("Failed to create rows");
+        let mut rows = Rows::new(&schema, 5).expect("Failed to create rows");
 
         // Add a row with null value field (should succeed since value field is nullable)
         let row_with_null_value = crate::table::Row::new()
@@ -1442,13 +1495,6 @@ mod tests {
 
         rows.add_row(row_with_null_value)
             .expect("Failed to add row");
-
-        // Converting to RecordBatch should succeed because value field is nullable
-        let result = RecordBatch::try_from(rows);
-        assert!(
-            result.is_ok(),
-            "Should succeed when nullable field contains null value"
-        );
     }
 
     #[test]
@@ -1513,59 +1559,294 @@ mod tests {
     }
 
     #[test]
-    fn test_rows_from_record_batch() {
-        // 1. Create a sample RecordBatch
-        let schema_vec = vec![
+    fn test_row_batch_builder_min_max_timestamp() {
+        // Create schema with timestamp and value columns
+        let schema = vec![
             Column {
-                name: "id".to_string(),
-                data_type: ColumnDataType::Int32,
-                semantic_type: SemanticType::Field,
+                name: "ts".to_string(),
+                data_type: ColumnDataType::TimestampMillisecond,
+                semantic_type: SemanticType::Timestamp,
                 data_type_extension: None,
             },
             Column {
-                name: "msg".to_string(),
-                data_type: ColumnDataType::String,
+                name: "value".to_string(),
+                data_type: ColumnDataType::Int64,
                 semantic_type: SemanticType::Field,
                 data_type_extension: None,
             },
         ];
-        let record_batch = {
-            let mut sample_rows = Rows::new(&schema_vec, 2, 2).unwrap();
-            let row1 = crate::table::Row::new()
-                .add_values(vec![Value::Int32(1), Value::String("hello".to_string())]);
-            let row2 = crate::table::Row::new()
-                .add_values(vec![Value::Int32(2), Value::String("world".to_string())]);
-            sample_rows.add_row(row1).unwrap();
-            sample_rows.add_row(row2).unwrap();
-            RecordBatch::try_from(sample_rows).unwrap()
-        };
 
-        let original_schema = record_batch.schema();
-        let original_num_rows = record_batch.num_rows();
-        let original_num_cols = record_batch.num_columns();
+        let mut builder = RowBatchBuilder::new(&schema, 10).expect("Failed to create builder");
 
-        // 2. Create Rows from the RecordBatch
-        let mut rows_from_batch = Rows::from_record_batch(record_batch.clone()).unwrap();
+        // Initially, min should be MAX and max should be MIN
+        assert_eq!(builder.min_timestamp, i64::MAX);
+        assert_eq!(builder.max_timestamp, i64::MIN);
 
-        // 3. Verify schema, row count, and column count
-        assert_eq!(*rows_from_batch.schema(), *original_schema);
-        assert_eq!(rows_from_batch.len(), original_num_rows);
-        assert_eq!(rows_from_batch.column_count, original_num_cols);
-        assert!(!rows_from_batch.is_empty());
-        assert_eq!(rows_from_batch.len(), 2);
+        // Add first row with timestamp 1000
+        let row1 = crate::table::Row::new()
+            .add_values(vec![Value::TimestampMillisecond(1000), Value::Int64(10)]);
+        builder.add_row(&row1).expect("Failed to add row1");
 
-        // 4. Ensure adding a new row fails
-        let row_to_add = crate::table::Row::new()
-            .add_values(vec![Value::Int32(3), Value::String("new".to_string())]);
-        let add_result = rows_from_batch.add_row(row_to_add);
-        assert!(add_result.is_err());
-        assert_eq!(
-            add_result.unwrap_err().to_string(),
-            "Cannot add row to a Rows object that was created from a RecordBatch"
+        assert_eq!(builder.min_timestamp, 1000);
+        assert_eq!(builder.max_timestamp, 1000);
+
+        // Add second row with a larger timestamp 2000
+        let row2 = crate::table::Row::new()
+            .add_values(vec![Value::TimestampMillisecond(2000), Value::Int64(20)]);
+        builder.add_row(&row2).expect("Failed to add row2");
+
+        assert_eq!(builder.min_timestamp, 1000);
+        assert_eq!(builder.max_timestamp, 2000);
+
+        // Add third row with a smaller timestamp 500
+        let row3 = crate::table::Row::new()
+            .add_values(vec![Value::TimestampMillisecond(500), Value::Int64(30)]);
+        builder.add_row(&row3).expect("Failed to add row3");
+
+        assert_eq!(builder.min_timestamp, 500);
+        assert_eq!(builder.max_timestamp, 2000);
+
+        // Add fourth row with timestamp between min and max (1500)
+        let row4 = crate::table::Row::new()
+            .add_values(vec![Value::TimestampMillisecond(1500), Value::Int64(40)]);
+        builder.add_row(&row4).expect("Failed to add row4");
+
+        // min and max should remain unchanged
+        assert_eq!(builder.min_timestamp, 500);
+        assert_eq!(builder.max_timestamp, 2000);
+
+        // Verify row count
+        assert_eq!(builder.len(), 4);
+    }
+
+    #[test]
+    fn test_record_batch_with_timestamp_preserves_native_unit() {
+        // `start_timestamp`/`end_timestamp` on RecordBatchWithTimestamp are in the
+        // timestamp column's native unit (no normalization to nanoseconds).
+        let cases: &[(ColumnDataType, i64, i64)] = &[
+            (ColumnDataType::TimestampSecond, 1, 5),
+            (ColumnDataType::TimestampMillisecond, 1_000, 2_500),
+            (ColumnDataType::Datetime, 1_000, 2_500),
+            (ColumnDataType::TimestampMicrosecond, 1_000, 2_500),
+            (ColumnDataType::TimestampNanosecond, 1_000, 2_500),
+        ];
+
+        for &(ts_type, raw_min, raw_max) in cases {
+            let schema = create_timestamp_schema(ts_type);
+            let mut rows = Rows::new(&schema, 4).expect("Failed to create rows");
+            rows.add_row(create_row(ts_type, raw_min, 10)).unwrap();
+            rows.add_row(create_row(ts_type, raw_max, 20)).unwrap();
+
+            let batches: Vec<RecordBatchWithTimestamp> =
+                rows.try_into().expect("Failed to convert rows");
+            assert_eq!(batches.len(), 1, "ts_type={:?}", ts_type);
+
+            let batch = &batches[0];
+            assert_eq!(batch.start_timestamp(), raw_min, "ts_type={:?}", ts_type);
+            assert_eq!(batch.end_timestamp(), raw_max, "ts_type={:?}", ts_type);
+        }
+    }
+
+    #[test]
+    fn test_rows_with_datetime_timestamp_column_uses_microsecond_window() {
+        let schema = create_timestamp_schema(ColumnDataType::Datetime);
+        let mut rows = Rows::new(&schema, 10).expect("Failed to create rows");
+
+        add_rows(
+            &mut rows,
+            ColumnDataType::Datetime,
+            &[(0, 1), (3_599_999_999, 2), (3_600_000_000, 3)],
         );
 
-        // 5. Verify that converting back yields the original RecordBatch
-        let converted_batch = RecordBatch::try_from(rows_from_batch).unwrap();
-        assert_eq!(converted_batch, record_batch);
+        let batches = rows_to_sorted_batches(rows);
+
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].start_timestamp(), 0);
+        assert_eq!(batches[0].end_timestamp(), 3_599_999_999);
+        assert_eq!(batches[0].batch().num_rows(), 2);
+        assert_eq!(batches[1].start_timestamp(), 3_600_000_000);
+        assert_eq!(batches[1].end_timestamp(), 3_600_000_000);
+        assert_eq!(batches[1].batch().num_rows(), 1);
+    }
+
+    #[test]
+    fn test_window_initial_capacity_is_capped_per_window() {
+        assert_eq!(Rows::window_initial_capacity(0), 0);
+        assert_eq!(Rows::window_initial_capacity(32), 32);
+        assert_eq!(Rows::window_initial_capacity(10_000), 1024);
+    }
+
+    // Helper function to create a simple schema with timestamp and value columns
+    fn create_timestamp_schema(timestamp_type: ColumnDataType) -> Vec<Column> {
+        vec![
+            Column {
+                name: "ts".to_string(),
+                data_type: timestamp_type,
+                semantic_type: SemanticType::Timestamp,
+                data_type_extension: None,
+            },
+            Column {
+                name: "value".to_string(),
+                data_type: ColumnDataType::Int64,
+                semantic_type: SemanticType::Field,
+                data_type_extension: None,
+            },
+        ]
+    }
+
+    // Helper function to create a row with timestamp and value
+    fn create_row(timestamp_type: ColumnDataType, timestamp: i64, value: i64) -> crate::table::Row {
+        let timestamp_value = match timestamp_type {
+            ColumnDataType::TimestampSecond => Value::TimestampSecond(timestamp),
+            ColumnDataType::TimestampMillisecond => Value::TimestampMillisecond(timestamp),
+            ColumnDataType::Datetime => Value::Datetime(timestamp),
+            ColumnDataType::TimestampMicrosecond => Value::TimestampMicrosecond(timestamp),
+            ColumnDataType::TimestampNanosecond => Value::TimestampNanosecond(timestamp),
+            _ => panic!("Unsupported timestamp type for test"),
+        };
+        Row::new().add_values(vec![timestamp_value, Value::Int64(value)])
+    }
+
+    // Helper function to add rows to a Rows collection
+    fn add_rows(
+        rows: &mut Rows,
+        timestamp_type: ColumnDataType,
+        timestamps_and_values: &[(i64, i64)],
+    ) {
+        for (timestamp, value) in timestamps_and_values {
+            let row = create_row(timestamp_type, *timestamp, *value);
+            rows.add_row(row).expect("Failed to add row");
+        }
+    }
+
+    // Helper function to convert Rows to sorted batches
+    fn rows_to_sorted_batches(rows: Rows) -> Vec<RecordBatchWithTimestamp> {
+        let mut batches: Vec<RecordBatchWithTimestamp> =
+            rows.try_into().expect("Failed to convert to batches");
+        batches.sort_by_key(|b| b.start_timestamp());
+        batches
+    }
+
+    #[test]
+    fn test_calculate_window_key_timestamp_millisecond() {
+        // Create schema with TimestampMillisecond (window duration = 3600 * 1000 = 3,600,000 ms = 1 hour)
+        let schema = create_timestamp_schema(ColumnDataType::TimestampMillisecond);
+        let mut rows = Rows::new(&schema, 10).expect("Failed to create rows");
+
+        // Test 1: Timestamps in the same window should end up in the same batch
+        // Window 0: 0 to 3,599,999
+        add_rows(
+            &mut rows,
+            ColumnDataType::TimestampMillisecond,
+            &[(0, 1), (1_800_000, 2), (3_599_999, 3)],
+        );
+
+        // Test 2: Timestamps in different windows should end up in different batches
+        // Window 1: 3,600,000 to 7,199,999
+        add_rows(
+            &mut rows,
+            ColumnDataType::TimestampMillisecond,
+            &[(3_600_000, 4), (5_400_000, 5)],
+        );
+
+        let batches = rows_to_sorted_batches(rows);
+
+        // Should have 2 batches (2 different windows)
+        assert_eq!(batches.len(), 2);
+
+        // First batch should contain rows from window 0
+        assert_eq!(batches[0].start_timestamp(), 0);
+        assert_eq!(batches[0].end_timestamp(), 3_599_999);
+        assert_eq!(batches[0].batch().num_rows(), 3);
+
+        // Second batch should contain rows from window 1
+        assert_eq!(batches[1].start_timestamp(), 3_600_000);
+        assert_eq!(batches[1].end_timestamp(), 5_400_000);
+        assert_eq!(batches[1].batch().num_rows(), 2);
+    }
+
+    #[test]
+    fn test_calculate_window_key_timestamp_second() {
+        // Create schema with TimestampSecond (window duration = 3600 seconds = 1 hour)
+        let schema = create_timestamp_schema(ColumnDataType::TimestampSecond);
+        let mut rows = Rows::new(&schema, 10).expect("Failed to create rows");
+
+        // Window 0: 0 to 3599
+        add_rows(
+            &mut rows,
+            ColumnDataType::TimestampSecond,
+            &[(0, 1), (1800, 2)],
+        );
+
+        // Window 1: 3600 to 7199
+        add_rows(&mut rows, ColumnDataType::TimestampSecond, &[(3600, 3)]);
+
+        let batches = rows_to_sorted_batches(rows);
+
+        assert_eq!(batches.len(), 2);
+        // First batch: min=0, max=1800
+        assert_eq!(batches[0].start_timestamp(), 0);
+        assert_eq!(batches[0].end_timestamp(), 1800);
+        assert_eq!(batches[0].batch().num_rows(), 2);
+        // Second batch: min=3600, max=3600
+        assert_eq!(batches[1].start_timestamp(), 3600);
+        assert_eq!(batches[1].end_timestamp(), 3600);
+        assert_eq!(batches[1].batch().num_rows(), 1);
+    }
+
+    #[test]
+    fn test_calculate_window_key_boundary_conditions() {
+        // Test timestamps exactly at window boundaries
+        let schema = create_timestamp_schema(ColumnDataType::TimestampMillisecond);
+        let mut rows = Rows::new(&schema, 10).expect("Failed to create rows");
+        let window_duration = 3600i64 * 1000; // 1 hour in milliseconds
+
+        // Add rows at window boundaries
+        add_rows(
+            &mut rows,
+            ColumnDataType::TimestampMillisecond,
+            &[
+                (0, 1),                   // Window start
+                (window_duration - 1, 2), // Just before next window
+                (window_duration, 3),     // Exactly at next window boundary
+            ],
+        );
+
+        let batches = rows_to_sorted_batches(rows);
+
+        assert_eq!(batches.len(), 2);
+        // First batch should have rows from window 0
+        assert_eq!(batches[0].start_timestamp(), 0);
+        assert_eq!(batches[0].batch().num_rows(), 2);
+        // Second batch should have row from window 1
+        assert_eq!(batches[1].start_timestamp(), window_duration);
+        assert_eq!(batches[1].batch().num_rows(), 1);
+    }
+
+    #[test]
+    fn test_calculate_window_key_negative_timestamps() {
+        // Test with negative timestamps (before epoch)
+        let schema = create_timestamp_schema(ColumnDataType::TimestampMillisecond);
+        let mut rows = Rows::new(&schema, 10).expect("Failed to create rows");
+        let window_duration = 3600i64 * 1000;
+
+        // Negative timestamps should still be grouped into windows
+        add_rows(
+            &mut rows,
+            ColumnDataType::TimestampMillisecond,
+            &[
+                (-window_duration, 1),             // Window -1
+                (-window_duration + 1_800_000, 2), // Window -1
+                (0, 3),                            // Window 0
+            ],
+        );
+
+        let batches = rows_to_sorted_batches(rows);
+
+        // Should have 2 batches (negative window and zero window)
+        assert_eq!(batches.len(), 2);
+        // Verify that rows are correctly grouped
+        let total_rows: usize = batches.iter().map(|b| b.batch().num_rows()).sum();
+        assert_eq!(total_rows, 3);
     }
 }

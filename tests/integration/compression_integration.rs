@@ -155,7 +155,7 @@ async fn insert_with_bulk_compression(
         .await
         .unwrap();
 
-    let mut rows = bulk_writer.alloc_rows_buffer(1, 128).unwrap();
+    let mut rows = bulk_writer.alloc_rows_buffer(128).unwrap();
     let row = BulkRow::new().add_values(vec![
         Value::TimestampMillisecond(now + 1),
         Value::String("bulk-node".to_string()),

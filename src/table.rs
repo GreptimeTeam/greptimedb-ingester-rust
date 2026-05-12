@@ -406,23 +406,23 @@ impl Row {
         }
     }
 
-    /// Take binary value at index (safe version with bounds checking)
-    pub fn take_binary(&mut self, index: usize) -> Option<Vec<u8>> {
+    /// Get binary value at index (safe version with bounds checking)
+    pub fn get_binary_ref(&self, index: usize) -> Option<&[u8]> {
         if index >= self.values.len() {
             return None;
         }
-        unsafe { self.take_binary_unchecked(index) }
+        unsafe { self.get_binary_ref_unchecked(index) }
     }
 
-    /// Take binary value at index (unsafe version without bounds checking)
+    /// Get binary value at index (unsafe version without bounds checking)
     /// # Safety
     /// The caller must ensure that `index < self.values.len()`
-    pub unsafe fn take_binary_unchecked(&mut self, index: usize) -> Option<Vec<u8>> {
-        match std::mem::replace(self.values.get_unchecked_mut(index), Value::Null) {
-            Value::Binary(v) => Some(v),
-            Value::String(v) => Some(v.into_bytes()), // JSON type
+    pub unsafe fn get_binary_ref_unchecked(&self, index: usize) -> Option<&[u8]> {
+        match self.values.get_unchecked(index) {
+            Value::Binary(v) => Some(v.as_slice()),
+            Value::String(v) => Some(v.as_bytes()), // JSON type
             Value::Null => None,
-            other => handle_type_mismatch(index, "binary", &other),
+            other => handle_type_mismatch(index, "binary", other),
         }
     }
 
@@ -446,22 +446,22 @@ impl Row {
         }
     }
 
-    /// Take string value at index (safe version with bounds checking)
-    pub fn take_string(&mut self, index: usize) -> Option<String> {
+    /// Get string value at index (safe version with bounds checking)
+    pub fn get_string_ref(&self, index: usize) -> Option<&String> {
         if index >= self.values.len() {
             return None;
         }
-        unsafe { self.take_string_unchecked(index) }
+        unsafe { self.get_string_ref_unchecked(index) }
     }
 
-    /// Take string value at index (unsafe version without bounds checking)
+    /// Get string value at index (unsafe version without bounds checking)
     /// # Safety
     /// The caller must ensure that `index < self.values.len()`
-    pub unsafe fn take_string_unchecked(&mut self, index: usize) -> Option<String> {
-        match std::mem::replace(self.values.get_unchecked_mut(index), Value::Null) {
+    pub unsafe fn get_string_ref_unchecked(&self, index: usize) -> Option<&String> {
+        match self.values.get_unchecked(index) {
             Value::String(v) => Some(v),
             Value::Null => None,
-            other => handle_type_mismatch(index, "string", &other),
+            other => handle_type_mismatch(index, "string", other),
         }
     }
 
@@ -510,6 +510,7 @@ impl Row {
         match self.values.get(index)? {
             Value::TimestampSecond(v) => Some(*v),
             Value::TimestampMillisecond(v) => Some(*v),
+            Value::Datetime(v) => Some(*v),
             Value::TimestampMicrosecond(v) => Some(*v),
             Value::TimestampNanosecond(v) => Some(*v),
             Value::Null => None,
@@ -524,6 +525,7 @@ impl Row {
         match self.values.get_unchecked(index) {
             Value::TimestampSecond(v) => Some(*v),
             Value::TimestampMillisecond(v) => Some(*v),
+            Value::Datetime(v) => Some(*v),
             Value::TimestampMicrosecond(v) => Some(*v),
             Value::TimestampNanosecond(v) => Some(*v),
             Value::Null => None,

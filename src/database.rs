@@ -34,7 +34,7 @@ use tonic::transport::Channel;
 use crate::client::Client;
 use crate::error::{self, IllegalDatabaseResponseSnafu};
 use crate::flight::do_put::DoPutResponse;
-use crate::Result;
+use crate::{consts, Result};
 
 type FlightDataStream = Pin<Box<dyn Stream<Item = FlightData> + Send>>;
 
@@ -144,11 +144,13 @@ impl Database {
             let auth_str = format!("Basic {encoded}");
             let value = MetadataValue::from_str(&auth_str)
                 .context(error::InvalidTonicMetadataValueSnafu)?;
-            request.metadata_mut().insert("x-greptime-auth", value);
+            request
+                .metadata_mut()
+                .insert(consts::REQUEST_METADATA_KEY_AUTH, value);
         }
 
         request.metadata_mut().insert(
-            "x-greptime-db-name",
+            consts::REQUEST_METADATA_KEY_DATABASE_NAME,
             MetadataValue::from_str(&self.dbname).context(error::InvalidTonicMetadataValueSnafu)?,
         );
 
@@ -203,7 +205,7 @@ impl Database {
         let hint_strings: Vec<String> = hints.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let value = hint_strings.join(",");
 
-        let key = AsciiMetadataKey::from_static("x-greptime-hints");
+        let key = AsciiMetadataKey::from_static(consts::REQUEST_METADATA_KEY_HINTS);
         let value =
             AsciiMetadataValue::from_str(&value).context(error::InvalidTonicMetadataValueSnafu)?;
         metadata.insert(key, value);

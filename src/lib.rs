@@ -18,6 +18,7 @@ pub mod api;
 pub mod bulk;
 pub mod channel_manager;
 pub mod client;
+mod consts;
 pub mod database;
 mod error;
 pub mod flight;

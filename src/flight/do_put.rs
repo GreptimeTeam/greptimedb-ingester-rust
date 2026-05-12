@@ -20,21 +20,47 @@ use crate::error;
 
 /// The metadata for "DoPut" requests and responses.
 ///
-/// Currently, there's only a "request_id", for coordinating requests and responses in the streams.
+/// Contains a "request_id" for coordinating requests and responses in the streams.
+/// Optionally includes time range metadata (`min_timestamp` and `max_timestamp`) for
+/// time-windowed batches; these are expressed in the timestamp column's native unit,
+/// matching the unit declared in the table schema.
 /// Client can set a unique request id in this metadata, and the server will return the same id in
 /// the corresponding response. In doing so, a client can know how to do with its pending requests.
 #[derive(Serialize, Deserialize)]
 pub struct DoPutMetadata {
     request_id: i64,
+    /// Minimum timestamp of the batch (optional, for time-windowed batches)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min_timestamp: Option<i64>,
+    /// Maximum timestamp of the batch (optional, for time-windowed batches)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_timestamp: Option<i64>,
 }
 
 impl DoPutMetadata {
-    pub fn new(request_id: i64) -> Self {
-        Self { request_id }
+    /// Create a new DoPutMetadata with request_id and optional time range
+    pub fn new(request_id: i64, min_timestamp: Option<i64>, max_timestamp: Option<i64>) -> Self {
+        Self {
+            request_id,
+            min_timestamp,
+            max_timestamp,
+        }
     }
 
     pub fn request_id(&self) -> i64 {
         self.request_id
+    }
+
+    /// Get the minimum timestamp in the timestamp column's native unit, if available
+    #[must_use]
+    pub fn min_timestamp(&self) -> Option<i64> {
+        self.min_timestamp
+    }
+
+    /// Get the maximum timestamp in the timestamp column's native unit, if available
+    #[must_use]
+    pub fn max_timestamp(&self) -> Option<i64> {
+        self.max_timestamp
     }
 }
 
@@ -78,9 +104,30 @@ mod tests {
 
     #[test]
     fn test_serde_do_put_metadata() {
+        // Test backward compatibility: old format without time range
         let serialized = r#"{"request_id":42}"#;
         let metadata = serde_json::from_str::<DoPutMetadata>(serialized).unwrap();
         assert_eq!(metadata.request_id(), 42);
+        assert_eq!(metadata.min_timestamp(), None);
+        assert_eq!(metadata.max_timestamp(), None);
+
+        // Test new format with time range uses the server-side contract names.
+        let metadata_with_ts = DoPutMetadata::new(42, Some(1000), Some(2000));
+        let serialized = serde_json::to_string(&metadata_with_ts).unwrap();
+        assert_eq!(
+            serialized,
+            r#"{"request_id":42,"min_timestamp":1000,"max_timestamp":2000}"#
+        );
+        let deserialized = serde_json::from_str::<DoPutMetadata>(&serialized).unwrap();
+        assert_eq!(deserialized.request_id(), 42);
+        assert_eq!(deserialized.min_timestamp(), Some(1000));
+        assert_eq!(deserialized.max_timestamp(), Some(2000));
+
+        // The client contract should use the GreptimeDB server field names directly.
+        let old_field_names = r#"{"request_id":42,"start_timestamp":1000,"end_timestamp":2000}"#;
+        let deserialized = serde_json::from_str::<DoPutMetadata>(old_field_names).unwrap();
+        assert_eq!(deserialized.min_timestamp(), None);
+        assert_eq!(deserialized.max_timestamp(), None);
     }
 
     #[test]
