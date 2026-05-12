@@ -858,7 +858,7 @@ impl Rows {
             Entry::Occupied(ref mut e) => e.get_mut(),
             Entry::Vacant(v) => v.insert(RowBatchBuilder::new(
                 &self.column_schemas,
-                self.default_capacity,
+                Self::window_initial_capacity(self.default_capacity),
             )?),
         };
 
@@ -885,10 +885,15 @@ impl Rows {
     pub fn schema(&self) -> &Schema {
         &self.schema
     }
+
+    fn window_initial_capacity(default_capacity: usize) -> usize {
+        default_capacity.min(MAX_WINDOW_INITIAL_CAPACITY)
+    }
 }
 
 /// Time window key type - represents window start time in nanoseconds
 type TimeWindowKey = i64;
+const MAX_WINDOW_INITIAL_CAPACITY: usize = 1024;
 
 /// Record batch with timestamp range metadata
 /// Represents a RecordBatch that belongs to a specific time window.
@@ -1364,7 +1369,7 @@ fn find_timestamp_index_and_window(column_schemas: &[Column]) -> Result<(usize, 
     let time_window_duration = match timestamp_type.data_type {
         ColumnDataType::TimestampSecond => 3600i64,
         ColumnDataType::TimestampMillisecond => 3600i64 * 1000,
-        ColumnDataType::TimestampMicrosecond => 3600i64 * 1000 * 1000,
+        ColumnDataType::Datetime | ColumnDataType::TimestampMicrosecond => 3600i64 * 1000 * 1000,
         ColumnDataType::TimestampNanosecond => 3600i64 * 1000 * 1000 * 1000,
         other => {
             return error::InvalidTimestampTypeSnafu {
@@ -1621,6 +1626,7 @@ mod tests {
         let cases: &[(ColumnDataType, i64, i64)] = &[
             (ColumnDataType::TimestampSecond, 1, 5),
             (ColumnDataType::TimestampMillisecond, 1_000, 2_500),
+            (ColumnDataType::Datetime, 1_000, 2_500),
             (ColumnDataType::TimestampMicrosecond, 1_000, 2_500),
             (ColumnDataType::TimestampNanosecond, 1_000, 2_500),
         ];
@@ -1639,6 +1645,35 @@ mod tests {
             assert_eq!(batch.start_timestamp(), raw_min, "ts_type={:?}", ts_type);
             assert_eq!(batch.end_timestamp(), raw_max, "ts_type={:?}", ts_type);
         }
+    }
+
+    #[test]
+    fn test_rows_with_datetime_timestamp_column_uses_microsecond_window() {
+        let schema = create_timestamp_schema(ColumnDataType::Datetime);
+        let mut rows = Rows::new(&schema, 10).expect("Failed to create rows");
+
+        add_rows(
+            &mut rows,
+            ColumnDataType::Datetime,
+            &[(0, 1), (3_599_999_999, 2), (3_600_000_000, 3)],
+        );
+
+        let batches = rows_to_sorted_batches(rows);
+
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].start_timestamp(), 0);
+        assert_eq!(batches[0].end_timestamp(), 3_599_999_999);
+        assert_eq!(batches[0].batch().num_rows(), 2);
+        assert_eq!(batches[1].start_timestamp(), 3_600_000_000);
+        assert_eq!(batches[1].end_timestamp(), 3_600_000_000);
+        assert_eq!(batches[1].batch().num_rows(), 1);
+    }
+
+    #[test]
+    fn test_window_initial_capacity_is_capped_per_window() {
+        assert_eq!(Rows::window_initial_capacity(0), 0);
+        assert_eq!(Rows::window_initial_capacity(32), 32);
+        assert_eq!(Rows::window_initial_capacity(10_000), 1024);
     }
 
     // Helper function to create a simple schema with timestamp and value columns
@@ -1664,6 +1699,7 @@ mod tests {
         let timestamp_value = match timestamp_type {
             ColumnDataType::TimestampSecond => Value::TimestampSecond(timestamp),
             ColumnDataType::TimestampMillisecond => Value::TimestampMillisecond(timestamp),
+            ColumnDataType::Datetime => Value::Datetime(timestamp),
             ColumnDataType::TimestampMicrosecond => Value::TimestampMicrosecond(timestamp),
             ColumnDataType::TimestampNanosecond => Value::TimestampNanosecond(timestamp),
             _ => panic!("Unsupported timestamp type for test"),

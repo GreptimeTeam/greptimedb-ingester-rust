@@ -510,6 +510,7 @@ impl Row {
         match self.values.get(index)? {
             Value::TimestampSecond(v) => Some(*v),
             Value::TimestampMillisecond(v) => Some(*v),
+            Value::Datetime(v) => Some(*v),
             Value::TimestampMicrosecond(v) => Some(*v),
             Value::TimestampNanosecond(v) => Some(*v),
             Value::Null => None,
@@ -524,6 +525,7 @@ impl Row {
         match self.values.get_unchecked(index) {
             Value::TimestampSecond(v) => Some(*v),
             Value::TimestampMillisecond(v) => Some(*v),
+            Value::Datetime(v) => Some(*v),
             Value::TimestampMicrosecond(v) => Some(*v),
             Value::TimestampNanosecond(v) => Some(*v),
             Value::Null => None,
