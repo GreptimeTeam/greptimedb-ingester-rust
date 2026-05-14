@@ -75,7 +75,7 @@ fn create_test_rows_optimized(
 /// Demonstrates high-throughput parallel bulk writing
 /// Multiple requests can be in-flight simultaneously, maximizing network utilization
 async fn run_parallel_writes(
-    table: String,
+    region: usize,
     write_config: WriteConfig,
     config: DbConfig,
 ) -> Result<usize> {
@@ -89,7 +89,7 @@ async fn run_parallel_writes(
 
     // IMPORTANT: Row data must match the exact column order defined in table_template
     let table_template = TableSchema::builder()
-        .name(table.clone())
+        .name("t1")
         .build()
         .unwrap()
         .add_timestamp("ts", ColumnDataType::TimestampMicrosecond) // Index 0
@@ -114,7 +114,7 @@ async fn run_parallel_writes(
     let rows_per_batch = write_config.rows_per_batch;
 
     println!(
-        "  Table {table}: {} batches x {} rows = {} total rows",
+        "  Region {region}: {} batches x {} rows = {} total rows",
         batch_count,
         rows_per_batch,
         batch_count * rows_per_batch
@@ -126,20 +126,21 @@ async fn run_parallel_writes(
     let submit_start = Instant::now();
 
     for batch_num in 0..batch_count {
+        let batch_id = region * batch_count + batch_num;
         // Demonstrate different API approaches
-        let rows = create_test_rows_optimized(&bulk_writer, batch_num, rows_per_batch)?;
+        let rows = create_test_rows_optimized(&bulk_writer, batch_id, rows_per_batch)?;
         match bulk_writer.write_rows_async(rows).await {
             Ok(ids) => {
                 request_ids.extend(ids);
                 if (batch_num + 1) % 100 == 0 {
                     println!(
-                        "  Table {table}: submitted {}/{} batches",
+                        "  Region {region}: submitted {}/{} batches",
                         batch_num + 1,
                         batch_count
                     );
                 }
             }
-            Err(e) => eprintln!("  Table {table}: submission error for batch {batch_num}: {e:?}"),
+            Err(e) => eprintln!("  Region {region}: submission error for batch {batch_num}: {e:?}"),
         }
     }
 
@@ -150,14 +151,14 @@ async fn run_parallel_writes(
         request_ids.len() as f64 / submit_duration.as_secs_f64()
     };
     println!(
-        "  Table {table}: SUCCESS all {} batches submitted in {:.3}s ({:.0} batches/sec)",
+        "  Region {region}: SUCCESS all {} batches submitted in {:.3}s ({:.0} batches/sec)",
         request_ids.len(),
         submit_duration.as_secs_f64(),
         submit_throughput
     );
 
     // Phase 2: Wait for completion - collect all responses
-    println!("  Table {table}: waiting for parallel processing to complete...");
+    println!("  Region {region}: waiting for parallel processing to complete...");
     let wait_start = Instant::now();
     let responses = bulk_writer.wait_for_all_pending().await?;
     let wait_duration = wait_start.elapsed();
@@ -181,7 +182,7 @@ async fn run_parallel_writes(
     };
 
     println!(
-        "  Table {table}: SUCCESS parallel write: {} rows in {:.2}s ({:.0} rows/sec)",
+        "  Region {region}: SUCCESS parallel write: {} rows in {:.2}s ({:.0} rows/sec)",
         total_rows,
         total_duration.as_secs_f64(),
         throughput
@@ -199,8 +200,8 @@ async fn run_parallel_writes(
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(long, required = true, num_args = 1.., value_delimiter = ',')]
-    tables: Vec<String>,
+    #[arg(long, default_value_t = 4)]
+    regions: usize,
 
     #[arg(long, default_value_t = 2000)]
     batch_count: usize,
@@ -220,34 +221,26 @@ fn main() -> ExampleResult<()> {
     config.display();
     println!();
 
-    println!(
-        "[1/1] Parallel Optimization (async submission across {} tables)",
-        args.tables.len()
-    );
-
     let write_config = WriteConfig {
         batch_count: args.batch_count,
         rows_per_batch: args.rows_per_batch,
     };
 
     let total_start = Instant::now();
-    let table_writes: Vec<_> = args
-        .tables
-        .iter()
-        .cloned()
-        .map(|table| {
+    let region_writes: Vec<_> = (0..args.regions)
+        .map(|region| {
             let config = config.clone();
             thread::spawn(move || -> ExampleResult<usize> {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
-                Ok(runtime.block_on(run_parallel_writes(table, write_config, config))?)
+                Ok(runtime.block_on(run_parallel_writes(region, write_config, config))?)
             })
         })
         .collect();
 
     let mut total_rows = 0usize;
-    for thread in table_writes {
+    for thread in region_writes {
         let rows = thread
             .join()
             .map_err(|panic| format!("table write thread panicked: {panic:?}"))??;
