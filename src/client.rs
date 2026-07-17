@@ -22,7 +22,11 @@ use snafu::OptionExt;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 
-use crate::channel_manager::{ChannelConfig, ChannelManager, ClientTlsOption};
+#[cfg(any(test, feature = "tls-ring"))]
+use crate::channel_manager::ChannelConfig;
+use crate::channel_manager::ChannelManager;
+#[cfg(feature = "tls-ring")]
+use crate::channel_manager::ClientTlsOption;
 use crate::load_balance::{LoadBalance, Loadbalancer};
 use crate::{error, Result};
 
@@ -59,6 +63,7 @@ impl Client {
         Self::with_manager_and_urls(ChannelManager::new(), urls)
     }
 
+    #[cfg(feature = "tls-ring")]
     pub fn with_tls_and_urls<U, A>(urls: A, client_tls: ClientTlsOption) -> Result<Self>
     where
         U: AsRef<str>,
