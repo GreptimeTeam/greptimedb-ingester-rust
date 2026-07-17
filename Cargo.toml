@@ -46,7 +46,7 @@ snafu = "0.8"
 tokio = { version = "1.40", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-util = { version = "0.7", features = ["io-util", "compat"] }
-tonic = { version = "0.14", features = ["tls-ring", "gzip", "zstd"] }
+tonic = { version = "0.14", features = ["gzip", "zstd"] }
 tower = "0.5"
 derive_builder = "0.20"
 toml = "0.9.8"
@@ -74,6 +74,11 @@ required-features = ["integration-tests"]
 [features]
 default = []
 integration-tests = []
+# Opt-in rustls-backed TLS. Without this feature the client is
+# plaintext-only and the dependency graph contains no rustls, which lets
+# downstreams with a system-native-TLS-only policy (or a trusted local
+# hop) consume the row API.
+tls-ring = ["tonic/tls-ring"]
 
 [profile.release]
 debug = true
