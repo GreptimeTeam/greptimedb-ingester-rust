@@ -72,6 +72,16 @@ where
 
 pub type RequestId = i64;
 
+/// Arrow field metadata key carrying the GreptimeDB semantic type of a column
+/// (`timestamp`, `tag` or `field`). Attached to every field of the bulk insert
+/// Arrow schema so that the server can auto-create the table on first write.
+pub const GREPTIME_SEMANTIC_TYPE_KEY: &str = "greptime:semantic_type";
+
+/// Arrow field metadata key carrying the extended GreptimeDB column type for
+/// types that do not round-trip through Arrow (e.g. `Json`, which is encoded
+/// as Arrow `Binary`).
+pub const GREPTIME_TYPE_KEY: &str = "greptime:type";
+
 /// High-level bulk inserter for `GreptimeDB`
 #[derive(Clone, Debug)]
 pub struct BulkInserter {
@@ -191,11 +201,7 @@ impl BulkStreamWriter {
         let fields: Result<Vec<Field>> = table_schema
             .columns()
             .iter()
-            .map(|col| {
-                let nullable = col.semantic_type != SemanticType::Timestamp;
-                column_to_arrow_data_type(col)
-                    .map(|data_type| Field::new(&col.name, data_type, nullable))
-            })
+            .map(column_to_arrow_field)
             .collect();
         let arrow_schema = Arc::new(Schema::new(fields?));
 
@@ -688,6 +694,27 @@ impl BulkStreamWriter {
     }
 }
 
+/// Convert a table column to an Arrow field, attaching the GreptimeDB metadata
+/// (`greptime:semantic_type` and, for extended types like JSON, `greptime:type`)
+/// that the server uses to auto-create the table on bulk insert.
+fn column_to_arrow_field(column: &Column) -> Result<Field> {
+    let data_type = column_to_arrow_data_type(column)?;
+    let nullable = column.semantic_type != SemanticType::Timestamp;
+    let semantic_type = match column.semantic_type {
+        SemanticType::Timestamp => "timestamp",
+        SemanticType::Tag => "tag",
+        SemanticType::Field => "field",
+    };
+    let mut metadata = HashMap::from([(
+        GREPTIME_SEMANTIC_TYPE_KEY.to_string(),
+        semantic_type.to_string(),
+    )]);
+    if column.data_type == ColumnDataType::Json {
+        metadata.insert(GREPTIME_TYPE_KEY.to_string(), "Json".to_string());
+    }
+    Ok(Field::new(&column.name, data_type, nullable).with_metadata(metadata))
+}
+
 // Helper function to convert ColumnDataType to Arrow DataType
 // Based on GreptimeDB Java implementation - only supports actually implemented types
 fn column_to_arrow_data_type(column: &Column) -> Result<DataType> {
@@ -982,15 +1009,10 @@ impl RowBatchBuilder {
         let mut fields = Vec::with_capacity(column_schemas.len());
         let mut timestamp_index_opt = None;
         for (idx, col) in column_schemas.iter().enumerate() {
-            let mut nullable = true;
             if col.semantic_type == SemanticType::Timestamp {
-                nullable = false;
                 timestamp_index_opt = Some(idx);
             }
-
-            let field = column_to_arrow_data_type(col)
-                .map(|data_type| Field::new(&col.name, data_type, nullable))?;
-            fields.push(field);
+            fields.push(column_to_arrow_field(col)?);
         }
         let schema = Arc::new(Schema::new(fields));
 
@@ -1674,6 +1696,93 @@ mod tests {
         assert_eq!(Rows::window_initial_capacity(0), 0);
         assert_eq!(Rows::window_initial_capacity(32), 32);
         assert_eq!(Rows::window_initial_capacity(10_000), 1024);
+    }
+
+    #[test]
+    fn test_arrow_fields_carry_greptime_metadata() {
+        let schema = vec![
+            Column {
+                name: "host".to_string(),
+                data_type: ColumnDataType::String,
+                semantic_type: SemanticType::Tag,
+                data_type_extension: None,
+            },
+            Column {
+                name: "ts".to_string(),
+                data_type: ColumnDataType::TimestampMillisecond,
+                semantic_type: SemanticType::Timestamp,
+                data_type_extension: None,
+            },
+            Column {
+                name: "value".to_string(),
+                data_type: ColumnDataType::Float64,
+                semantic_type: SemanticType::Field,
+                data_type_extension: None,
+            },
+            Column {
+                name: "payload".to_string(),
+                data_type: ColumnDataType::Json,
+                semantic_type: SemanticType::Field,
+                data_type_extension: None,
+            },
+            Column {
+                name: "raw".to_string(),
+                data_type: ColumnDataType::Binary,
+                semantic_type: SemanticType::Field,
+                data_type_extension: None,
+            },
+        ];
+
+        let rows = Rows::new(&schema, 1).expect("Failed to create rows");
+        let fields = rows.schema().fields();
+
+        let semantic_type_of = |idx: usize| {
+            fields[idx]
+                .metadata()
+                .get(GREPTIME_SEMANTIC_TYPE_KEY)
+                .cloned()
+        };
+        assert_eq!(semantic_type_of(0).as_deref(), Some("tag"));
+        assert_eq!(semantic_type_of(1).as_deref(), Some("timestamp"));
+        assert_eq!(semantic_type_of(2).as_deref(), Some("field"));
+
+        assert!(!fields[1].is_nullable());
+        assert!(fields[0].is_nullable());
+
+        assert_eq!(
+            fields[3]
+                .metadata()
+                .get(GREPTIME_TYPE_KEY)
+                .map(String::as_str),
+            Some("Json")
+        );
+        assert!(!fields[4].metadata().contains_key(GREPTIME_TYPE_KEY));
+        assert!(!fields[1].metadata().contains_key(GREPTIME_TYPE_KEY));
+    }
+
+    #[test]
+    fn test_record_batch_schema_carries_greptime_metadata() {
+        let schema = create_timestamp_schema(ColumnDataType::TimestampMillisecond);
+        let mut rows = Rows::new(&schema, 2).expect("Failed to create rows");
+        add_rows(&mut rows, ColumnDataType::TimestampMillisecond, &[(0, 1)]);
+
+        let batches: Vec<RecordBatchWithTimestamp> =
+            rows.try_into().expect("Failed to convert rows");
+        let batch_schema = batches[0].batch().schema();
+        assert_eq!(
+            batch_schema.fields()[0]
+                .metadata()
+                .get(GREPTIME_SEMANTIC_TYPE_KEY)
+                .map(String::as_str),
+            Some("timestamp")
+        );
+        assert_eq!(
+            batch_schema.fields()[1]
+                .metadata()
+                .get(GREPTIME_SEMANTIC_TYPE_KEY)
+                .map(String::as_str),
+            Some("field")
+        );
     }
 
     // Helper function to create a simple schema with timestamp and value columns
