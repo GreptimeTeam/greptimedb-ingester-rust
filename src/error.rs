@@ -192,6 +192,12 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Multiple timestamp columns in schema. Exactly one column with SemanticType::Timestamp is allowed"))]
+    MultipleTimestampColumns {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("Timestamp value is null. Timestamp columns cannot contain null values"))]
     NullTimestamp {
         #[snafu(implicit)]
