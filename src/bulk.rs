@@ -83,6 +83,8 @@ pub const GREPTIME_SEMANTIC_TYPE_KEY: &str = "greptime:semantic_type";
 /// as Arrow `Binary`). Must not be set on the timestamp column.
 pub const GREPTIME_TYPE_KEY: &str = "greptime:type";
 
+const AUTO_CREATE_TABLE_HINT_KEY: &str = "auto_create_table";
+
 /// High-level bulk inserter for `GreptimeDB`
 #[derive(Clone, Debug)]
 pub struct BulkInserter {
@@ -113,6 +115,23 @@ impl BulkInserter {
     ) -> Result<BulkStreamWriter> {
         let options = options.unwrap_or_default();
         BulkStreamWriter::new(&self.database, table_schema, options).await
+    }
+
+    /// Create a bulk stream writer and explicitly control automatic table creation.
+    pub async fn create_bulk_stream_writer_with_auto_create_table(
+        &self,
+        table_schema: &TableSchema,
+        options: Option<BulkWriteOptions>,
+        auto_create_table: bool,
+    ) -> Result<BulkStreamWriter> {
+        let options = options.unwrap_or_default();
+        BulkStreamWriter::new_with_auto_create_table(
+            &self.database,
+            table_schema,
+            options,
+            auto_create_table,
+        )
+        .await
     }
 }
 
@@ -166,6 +185,11 @@ impl BulkWriteOptions {
     }
 }
 
+fn auto_create_table_hint(auto_create_table: bool) -> (&'static str, &'static str) {
+    let value = if auto_create_table { "true" } else { "false" };
+    (AUTO_CREATE_TABLE_HINT_KEY, value)
+}
+
 /// High-performance bulk stream writer that maintains a persistent connection
 /// Each writer is bound to a specific table with fixed schema
 pub struct BulkStreamWriter {
@@ -194,6 +218,17 @@ impl BulkStreamWriter {
         database: &Database,
         table_schema: &TableSchema,
         options: BulkWriteOptions,
+    ) -> Result<Self> {
+        Self::new_with_auto_create_table(database, table_schema, options, false).await
+    }
+
+    /// Create a writer and explicitly control automatic table creation.
+    /// The server's global auto-create setting must also be enabled.
+    pub async fn new_with_auto_create_table(
+        database: &Database,
+        table_schema: &TableSchema,
+        options: BulkWriteOptions,
+        auto_create_table: bool,
     ) -> Result<Self> {
         // Create the encoder with compression settings
         let encoder = FlightEncoder::with_compression(options.compression);
@@ -234,7 +269,8 @@ impl BulkStreamWriter {
 
         // Convert receiver to a stream and start the do_put operation
         let flight_stream = receiver.boxed();
-        let response_stream = database.do_put(flight_stream).await?;
+        let hints = [auto_create_table_hint(auto_create_table)];
+        let response_stream = database.do_put_with_hints(flight_stream, &hints).await?;
 
         Ok(Self {
             sender,
@@ -1481,6 +1517,15 @@ mod tests {
             "Actual: {}",
             rows2_err_msg
         );
+    }
+
+    #[test]
+    fn test_auto_create_table_hint_values() {
+        assert_eq!(
+            auto_create_table_hint(false),
+            ("auto_create_table", "false")
+        );
+        assert_eq!(auto_create_table_hint(true), ("auto_create_table", "true"));
     }
 
     #[test]
