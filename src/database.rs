@@ -134,6 +134,32 @@ impl Database {
     /// Ingest a stream of [RecordBatch]es that belong to a table, using Arrow Flight's "`DoPut`"
     /// method. The return value is also a stream, produces [DoPutResponse]s.
     pub async fn do_put(&self, stream: FlightDataStream) -> Result<DoPutResponseStream> {
+        self.do_put_with_hints(stream, &[]).await
+    }
+
+    /// Ingest a stream of [RecordBatch]es with request hints using Arrow Flight's "`DoPut`".
+    pub(crate) async fn do_put_with_hints(
+        &self,
+        stream: FlightDataStream,
+        hints: &[(&str, &str)],
+    ) -> Result<DoPutResponseStream> {
+        let request = self.do_put_request(stream, hints)?;
+
+        let mut client = self.client.make_flight_client()?;
+        let response = client.mut_inner().do_put(request).await?;
+        let response = response
+            .into_inner()
+            .map_err(Into::into)
+            .and_then(|x| future::ready(DoPutResponse::try_from(x)))
+            .boxed();
+        Ok(response)
+    }
+
+    fn do_put_request(
+        &self,
+        stream: FlightDataStream,
+        hints: &[(&str, &str)],
+    ) -> Result<tonic::Request<FlightDataStream>> {
         let mut request = tonic::Request::new(stream);
 
         if let Some(AuthHeader {
@@ -153,15 +179,8 @@ impl Database {
             consts::REQUEST_METADATA_KEY_DATABASE_NAME,
             MetadataValue::from_str(&self.dbname).context(error::InvalidTonicMetadataValueSnafu)?,
         );
-
-        let mut client = self.client.make_flight_client()?;
-        let response = client.mut_inner().do_put(request).await?;
-        let response = response
-            .into_inner()
-            .map_err(Into::into)
-            .and_then(|x| future::ready(DoPutResponse::try_from(x)))
-            .boxed();
-        Ok(response)
+        Self::put_hints(request.metadata_mut(), hints)?;
+        Ok(request)
     }
 
     async fn handle(&self, request: Request, hints: &[(&str, &str)]) -> Result<u32> {
@@ -210,5 +229,51 @@ impl Database {
             AsciiMetadataValue::from_str(&value).context(error::InvalidTonicMetadataValueSnafu)?;
         metadata.insert(key, value);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::stream;
+
+    #[test]
+    fn test_do_put_request_contains_auth_database_and_hints() {
+        let mut database = Database::new_with_dbname("metrics", Client::new());
+        database.set_auth(AuthScheme::Basic(Basic {
+            username: "user".to_string(),
+            password: "pass".to_string(),
+        }));
+        let stream = stream::empty().boxed();
+
+        let request = database
+            .do_put_request(stream, &[("auto_create_table", "false")])
+            .unwrap();
+        let metadata = request.metadata();
+
+        assert_eq!(
+            metadata
+                .get(consts::REQUEST_METADATA_KEY_HINTS)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "auto_create_table=false"
+        );
+        assert_eq!(
+            metadata
+                .get(consts::REQUEST_METADATA_KEY_DATABASE_NAME)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "metrics"
+        );
+        assert_eq!(
+            metadata
+                .get(consts::REQUEST_METADATA_KEY_AUTH)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "Basic dXNlcjpwYXNz"
+        );
     }
 }
