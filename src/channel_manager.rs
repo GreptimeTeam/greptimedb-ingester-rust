@@ -19,15 +19,19 @@ use std::time::Duration;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use lazy_static::lazy_static;
-use snafu::{OptionExt, ResultExt};
+#[cfg(feature = "tls-ring")]
+use snafu::OptionExt;
+use snafu::ResultExt;
 use tokio_util::sync::CancellationToken;
 use tonic::codec::CompressionEncoding;
-use tonic::transport::{
-    Certificate, Channel as InnerChannel, ClientTlsConfig, Endpoint, Identity, Uri,
-};
+#[cfg(feature = "tls-ring")]
+use tonic::transport::{Certificate, ClientTlsConfig, Identity};
+use tonic::transport::{Channel as InnerChannel, Endpoint, Uri};
 use tower::Service;
 
-use crate::error::{CreateChannelSnafu, InvalidConfigFilePathSnafu, InvalidTlsConfigSnafu, Result};
+use crate::error::{CreateChannelSnafu, Result};
+#[cfg(feature = "tls-ring")]
+use crate::error::{InvalidConfigFilePathSnafu, InvalidTlsConfigSnafu};
 
 const RECYCLE_CHANNEL_INTERVAL_SECS: u64 = 60;
 pub const DEFAULT_GRPC_REQUEST_TIMEOUT_SECS: u64 = 10;
@@ -48,6 +52,7 @@ pub struct ChannelManager {
 struct Inner {
     id: u64,
     config: ChannelConfig,
+    #[cfg(feature = "tls-ring")]
     client_tls_config: Option<ClientTlsConfig>,
     pool: Arc<Pool>,
     channel_recycle_started: AtomicBool,
@@ -76,6 +81,7 @@ impl Inner {
         Self {
             id,
             config,
+            #[cfg(feature = "tls-ring")]
             client_tls_config: None,
             pool,
             channel_recycle_started: AtomicBool::new(false),
@@ -100,6 +106,7 @@ impl ChannelManager {
         }
     }
 
+    #[cfg(feature = "tls-ring")]
     pub fn with_tls_config(config: ChannelConfig) -> Result<Self> {
         let mut inner = Inner::with_config(config.clone());
 
@@ -198,11 +205,14 @@ impl ChannelManager {
     }
 
     fn build_endpoint(&self, addr: &str) -> Result<Endpoint> {
+        #[cfg(feature = "tls-ring")]
         let http_prefix = if self.inner.client_tls_config.is_some() {
             "https"
         } else {
             "http"
         };
+        #[cfg(not(feature = "tls-ring"))]
+        let http_prefix = "http";
 
         let mut endpoint =
             Endpoint::new(format!("{http_prefix}://{addr}")).context(CreateChannelSnafu)?;
@@ -237,6 +247,7 @@ impl ChannelManager {
         if let Some(enabled) = self.config().http2_adaptive_window {
             endpoint = endpoint.http2_adaptive_window(enabled);
         }
+        #[cfg(feature = "tls-ring")]
         if let Some(tls_config) = &self.inner.client_tls_config {
             endpoint = endpoint
                 .tls_config(tls_config.clone())
