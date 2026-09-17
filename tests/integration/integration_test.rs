@@ -74,7 +74,7 @@ async fn test_json2_insert() -> std::result::Result<(), Box<dyn std::error::Erro
         r#"{"value":null}"#,
     ];
 
-    // The first request is intentionally contains only NULL, to verify that auto-creation uses
+    // The first request intentionally contains only NULL, to verify that auto-creation uses
     // the JSON2 schema marker. Subsequent requests exercise different JSON shapes.
     for (index, payload) in payloads.iter().enumerate() {
         let request = RowInsertRequests {
