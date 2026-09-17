@@ -20,6 +20,13 @@ use tonic::{metadata::errors::InvalidMetadataValue, Status};
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
 pub enum Error {
+    #[snafu(display("Invalid JSON2 value: {reason}"))]
+    InvalidJson2 {
+        reason: String,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("Invalid client tls config, {}", msg))]
     InvalidTlsConfig {
         msg: String,
@@ -235,6 +242,7 @@ impl Error {
             Self::InvalidTlsConfig { .. }
                 | Self::MissingField { .. }
                 | Self::InvalidConfigFilePath { .. }
+                | Self::InvalidJson2 { .. }
         )
     }
 }
