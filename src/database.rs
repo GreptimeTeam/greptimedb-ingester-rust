@@ -38,7 +38,7 @@ use crate::{consts, Result};
 
 type FlightDataStream = Pin<Box<dyn Stream<Item = FlightData> + Send>>;
 
-type DoPutResponseStream = Pin<Box<dyn Stream<Item = Result<DoPutResponse>>>>;
+type DoPutResponseStream = Pin<Box<dyn Stream<Item = Result<DoPutResponse>> + Send>>;
 
 /// The Client for GreptimeDB Database API.
 #[derive(Clone, Default)]
