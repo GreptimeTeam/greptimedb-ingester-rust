@@ -311,7 +311,6 @@ async fn test_bulk_stream_writer_sequential() -> Result<()> {
     // Now use bulk API (table already exists)
     let bulk_inserter = BulkInserter::new(client, &config.database);
 
-    // Create table template (must match the schema above exactly)
     let table_template = TableSchema::builder()
         .name(&table_name)
         .build()
