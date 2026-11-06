@@ -183,14 +183,12 @@ async fn main() -> greptimedb_ingester::Result<()> {
 
 > **Important**:
 >
-> 1. **Table Creation**: Create the table before using the default bulk writer, using either:
+> 1. **Table Creation**: Create the table before using the bulk writer, using either:
 >     - Insert API (which supports auto table creation), or
 >     - SQL DDL statements (CREATE TABLE)
 > 2. **Schema Compatibility**: The writer's schema describes the columns being sent, not necessarily every column in the table. GreptimeDB matches columns by name, so their order need not match the table definition. Existing columns must have compatible types (including timestamp units), and non-nullable columns cannot contain nulls. Include the time index and any columns needed for partition routing. Other columns may be omitted if they are nullable or have a default value; the server fills them with their defaults, or nulls for nullable columns without defaults.
-> 3. **Automatic Column Addition**: GreptimeDB v1.3.0 and later can add new columns to an existing table before processing the first batch of a Flight stream, including an empty first batch. This happens once per stream. Both the server's `auto_create_table` setting and the request hint must allow it. The default Rust writer sends `auto_create_table=false`; opt in with `create_bulk_stream_writer_with_auto_create_table(&table_template, options, true)`. This does not enable automatic table creation on the open-source server. New ordinary columns are inferred as fields, not tags; nested and dictionary column types are not inferred. Pre-create columns that need those definitions.
+> 3. **Automatic Column Addition**: GreptimeDB v1.3.0 and later can add new columns to an existing table when both the server's `auto_create_table` setting and the request hint allow it. The Rust writer defaults to `auto_create_table=false`; opt in with `create_bulk_stream_writer_with_auto_create_table(&table_template, options, true)`. New ordinary columns are inferred as fields.
 > 4. **Rows Within a Writer**: Every `Rows` batch must match its writer's schema, and positional row values must follow that schema's column order. Use `alloc_rows_buffer()` or `new_row()` to build compatible batches.
-
-See the GreptimeDB v1.3.0 implementation of [column validation](https://github.com/GreptimeTeam/greptimedb/blob/badceec12a0e98fd69e83e9b9b9b06d9358b78dd/src/mito2/src/request.rs#L405), [automatic column addition](https://github.com/GreptimeTeam/greptimedb/blob/badceec12a0e98fd69e83e9b9b9b06d9358b78dd/src/operator/src/insert.rs#L898), and the [Flight integration tests](https://github.com/GreptimeTeam/greptimedb/blob/badceec12a0e98fd69e83e9b9b9b06d9358b78dd/tests-integration/src/grpc/flight.rs#L484).
 
 ## When to Choose Which API
 
