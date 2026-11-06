@@ -183,7 +183,7 @@ async fn main() -> greptimedb_ingester::Result<()> {
 
 > **Important**:
 >
-> 1. **Table Creation**: Create the table before using the bulk writer, using either:
+> 1. **Table Creation**: For open-source GreptimeDB, create the table before using the bulk writer, using either:
 >     - Insert API (which supports auto table creation), or
 >     - SQL DDL statements (CREATE TABLE)
 > 2. **Schema Compatibility**: The writer's schema describes the columns being sent, not necessarily every column in the table. GreptimeDB matches columns by name, so their order need not match the table definition. Existing columns must have compatible types (including timestamp units), and non-nullable columns cannot contain nulls. Include the time index and any columns needed for partition routing. Other columns may be omitted if they are nullable or have a default value; the server fills them with their defaults, or nulls for nullable columns without defaults.
