@@ -130,7 +130,6 @@ async fn main() -> greptimedb_ingester::Result<()> {
     // Step 2: Now use bulk API for high-throughput operations
     let bulk_inserter = BulkInserter::new(client, "public");
 
-    // Define table schema (must match the insert API schema above)
     let table_template = TableSchema::builder()
         .name("sensor_readings")
         .build()
@@ -184,10 +183,12 @@ async fn main() -> greptimedb_ingester::Result<()> {
 
 > **Important**:
 >
-> 1. **Manual Table Creation Required**: Bulk API does **not** create tables automatically. You must create the table beforehand using either:
+> 1. **Table Creation**: For open-source GreptimeDB, create the table before using the bulk writer, using either:
 >     - Insert API (which supports auto table creation), or
 >     - SQL DDL statements (CREATE TABLE)
-> 2. **Schema Matching**: The table template in bulk API must exactly match the existing table schema.
+> 2. **Schema Compatibility**: The writer's schema describes the columns being sent, not necessarily every column in the table. GreptimeDB matches columns by name, so their order need not match the table definition. Existing columns must have compatible types (including timestamp units), and non-nullable columns cannot contain nulls. Include the time index and any columns needed for partition routing. Other columns may be omitted if they are nullable or have a default value; the server fills them with their defaults, or nulls for nullable columns without defaults.
+> 3. **Automatic Column Addition**: GreptimeDB v1.3.0 and later can add new columns to an existing table when both the server's `auto_create_table` setting and the request hint allow it. The Rust writer defaults to `auto_create_table=false`; opt in with `create_bulk_stream_writer_with_auto_create_table(&table_template, options, true)`. New ordinary columns are inferred as fields.
+> 4. **Rows Within a Writer**: Every `Rows` batch must match its writer's schema, and positional row values must follow that schema's column order. Use `alloc_rows_buffer()` or `new_row()` to build compatible batches.
 
 ## When to Choose Which API
 
