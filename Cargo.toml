@@ -38,7 +38,7 @@ greptime-proto = "0.1.0"
 hyper = "1.1"
 lazy_static = "1.4"
 parking_lot = "0.12"
-prost = { version = "0.14", features = ["no-recursion-limit"] }
+prost = "0.14"
 rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
