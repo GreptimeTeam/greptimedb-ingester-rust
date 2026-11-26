@@ -131,6 +131,10 @@ impl Database {
         self.handle(Request::Deletes(request), &[]).await
     }
 
+    pub(crate) fn max_grpc_send_message_size(&self) -> usize {
+        self.client.max_grpc_send_message_size()
+    }
+
     /// Ingest a stream of [RecordBatch]es that belong to a table, using Arrow Flight's "`DoPut`"
     /// method. The return value is also a stream, produces [DoPutResponse]s.
     pub async fn do_put(&self, stream: FlightDataStream) -> Result<DoPutResponseStream> {

@@ -208,6 +208,7 @@ pub struct BulkStreamWriter {
     // Parallel processing fields
     parallelism: usize,
     timeout: Duration,
+    max_grpc_send_message_size: usize,
     // Track pending requests: request_id -> sent_time
     pending_requests: HashMap<RequestId, Instant>,
     // Cache completed responses that were processed but not yet retrieved
@@ -285,6 +286,7 @@ impl BulkStreamWriter {
             schema_sent: false,
             parallelism: options.parallelism,
             timeout: options.timeout,
+            max_grpc_send_message_size: database.max_grpc_send_message_size(),
             pending_requests: HashMap::new(),
             completed_responses: HashMap::new(),
         })
@@ -293,7 +295,9 @@ impl BulkStreamWriter {
     /// Write rows to the stream using the fixed table schema
     ///
     /// This method waits for all batches and returns a single `DoPutResponse`
-    /// with the total affected rows and the last submitted request ID.
+    /// with the total affected rows and the last submitted request ID. If a
+    /// backfill row is too large, the error includes any request IDs already
+    /// submitted, which can still be used with `wait_for_response`.
     pub async fn write_rows(&mut self, rows: Rows) -> Result<DoPutResponse> {
         let request_ids = self.write_rows_async(rows).await?;
 
@@ -313,6 +317,8 @@ impl BulkStreamWriter {
     /// use row and encoded message size limits. The returned request IDs are
     /// in submission order and can be used with `wait_for_response`. If an
     /// error occurs, some earlier batches may already have been submitted.
+    /// `Error::BackfillRowTooLarge` includes their request IDs and the zero-based
+    /// offset of the first unsent row.
     pub async fn write_rows_async(&mut self, rows: Rows) -> Result<Vec<RequestId>> {
         // Ensure that the rows are not empty
         ensure!(!rows.is_empty(), error::EmptyRowsSnafu);
@@ -323,23 +329,29 @@ impl BulkStreamWriter {
             Batching::Hourly { .. } => None,
             Batching::Backfill {
                 max_message_bytes, ..
-            } => Some(max_message_bytes.get()),
+            } => Some(max_message_bytes.get().min(self.max_grpc_send_message_size)),
         };
         let timestamp_index = rows.timestamp_column_index;
         let mut batches: Vec<RecordBatchWithTimestamp> = rows.try_into()?;
         let mut request_ids = Vec::with_capacity(batches.len());
         batches.reverse();
+        let mut row_offset = 0;
         while let Some(batch) = batches.pop() {
+            let row_count = batch.batch().num_rows();
             let request_id = self.next_request_id();
             let data = self.encode_record_batch(&batch, request_id)?;
             if let Some(limit) = max_message_bytes {
                 let size = data.encoded_len();
                 if size > limit {
-                    let row_count = batch.batch().num_rows();
-                    ensure!(
-                        row_count > 1,
-                        error::BackfillRowTooLargeSnafu { size, limit }
-                    );
+                    if row_count == 1 {
+                        return error::BackfillRowTooLargeSnafu {
+                            size,
+                            limit,
+                            submitted_request_ids: request_ids,
+                            first_unsent_row: row_offset,
+                        }
+                        .fail();
+                    }
                     let midpoint = row_count / 2;
                     batches.push(batch.slice(midpoint, row_count - midpoint, timestamp_index));
                     batches.push(batch.slice(0, midpoint, timestamp_index));
@@ -349,6 +361,7 @@ impl BulkStreamWriter {
             self.submit_record_batch(batch.batch().schema(), data, request_id)
                 .await?;
             request_ids.push(request_id);
+            row_offset += row_count;
         }
 
         Ok(request_ids)
@@ -514,9 +527,10 @@ impl BulkStreamWriter {
     /// Allocate a buffer for writing rows that span many time windows.
     ///
     /// Each request contains at most `max_rows` rows. A batch whose encoded
-    /// FlightData message exceeds `max_message_bytes` is split before sending.
-    /// Choose a byte limit within the applicable gRPC message limits. If a
-    /// single row exceeds the limit, writing it returns an error.
+    /// FlightData message exceeds the lower of `max_message_bytes` and the
+    /// client's gRPC send limit is split before sending. Set
+    /// `max_message_bytes` within the server's receive limit. If a single row
+    /// exceeds the effective limit, writing it returns an error.
     pub fn alloc_backfill_rows_buffer(
         &self,
         capacity: usize,
@@ -943,6 +957,10 @@ impl Rows {
 
     /// Add a row to the buffer. The time index must be present and non-null.
     pub fn add_row(&mut self, row: Row) -> Result<()> {
+        self.add_row_with_offset_limit(row, i32::MAX as usize)
+    }
+
+    fn add_row_with_offset_limit(&mut self, row: Row, offset_limit: usize) -> Result<()> {
         ensure!(
             row.len() == self.column_schemas.len(),
             error::InvalidColumnCountSnafu {
@@ -977,18 +995,27 @@ impl Rows {
                 &mut self.batches[index]
             }
             Batching::Backfill { max_rows, .. } => {
-                let index = self.row_count / max_rows.get();
-                if index == self.batches.len() {
-                    self.batches.push(RowBatchBuilder::new(
+                let max_rows = max_rows.get();
+                let needs_batch = match self.batches.last() {
+                    Some(batch) => {
+                        !batch.variable_values_fit(&row, offset_limit)?
+                            || batch.current_rows >= max_rows
+                    }
+                    None => true,
+                };
+                if needs_batch {
+                    let batch = RowBatchBuilder::new(
                         &self.column_schemas,
                         self.schema.clone(),
                         self.timestamp_column_index,
-                        self.capacity
-                            .saturating_sub(self.row_count)
-                            .min(max_rows.get()),
-                    )?);
+                        self.capacity.saturating_sub(self.row_count).min(max_rows),
+                    )?;
+                    if self.batches.is_empty() {
+                        batch.variable_values_fit(&row, offset_limit)?;
+                    }
+                    self.batches.push(batch);
                 }
-                &mut self.batches[index]
+                self.batches.last_mut().unwrap()
             }
         };
         batch.add_row(&row)?;
@@ -1126,6 +1153,35 @@ impl RowBatchBuilder {
             max_timestamp: i64::MIN,
             timestamp_idx,
         })
+    }
+
+    /// Arrow's string and binary builders use signed 32-bit value offsets.
+    /// Check every variable-width column before appending any part of the row.
+    fn variable_values_fit(&self, row: &Row, limit: usize) -> Result<bool> {
+        let mut fits = true;
+        for (index, builder) in self.builders.iter().enumerate() {
+            let (used, incoming) = match builder {
+                ArrayBuilderEnum::String(builder) => (
+                    builder.values_slice().len(),
+                    row.get_string_ref(index).map_or(0, String::len),
+                ),
+                ArrayBuilderEnum::Binary(builder) => (
+                    builder.values_slice().len(),
+                    row.get_binary_ref(index).map_or(0, <[u8]>::len),
+                ),
+                _ => continue,
+            };
+            ensure!(
+                incoming <= limit,
+                error::BackfillValueTooLargeSnafu {
+                    column: self.schema.field(index).name(),
+                    size: incoming,
+                    limit,
+                }
+            );
+            fits &= used <= limit - incoming;
+        }
+        Ok(fits)
     }
 
     /// Add multiple rows to the batch builder using batch operations
@@ -1823,6 +1879,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_backfill_rotates_before_variable_length_offsets_overflow() {
+        const OFFSET_LIMIT: usize = 8;
+        for data_type in [
+            ColumnDataType::String,
+            ColumnDataType::Binary,
+            ColumnDataType::Json,
+        ] {
+            let mut columns = create_timestamp_schema(ColumnDataType::TimestampMillisecond);
+            columns[1].data_type = data_type;
+            let mut rows = Rows::new(&columns, 4).unwrap();
+            rows.batching = Batching::Backfill {
+                max_rows: NonZeroUsize::new(4).unwrap(),
+                max_message_bytes: NonZeroUsize::MAX,
+            };
+            let make_row = |ts, value: &str| {
+                let value = match data_type {
+                    ColumnDataType::Binary => Value::Binary(value.as_bytes().to_vec()),
+                    _ => Value::String(value.to_string()),
+                };
+                Row::from_values(vec![Value::TimestampMillisecond(ts), value])
+            };
+            let assert_value_too_large = |rows: &mut Rows, ts| {
+                assert!(matches!(
+                    rows.add_row_with_offset_limit(make_row(ts, "123456789"), OFFSET_LIMIT),
+                    Err(crate::Error::BackfillValueTooLarge {
+                        size: 9,
+                        limit: OFFSET_LIMIT,
+                        ..
+                    })
+                ));
+            };
+            assert_value_too_large(&mut rows, 0);
+            rows.add_row_with_offset_limit(make_row(1, "1234"), OFFSET_LIMIT)
+                .unwrap();
+            rows.add_row_with_offset_limit(make_row(2, "éé"), OFFSET_LIMIT)
+                .unwrap();
+            assert_value_too_large(&mut rows, 3);
+            rows.add_row_with_offset_limit(make_row(4, "1"), OFFSET_LIMIT)
+                .unwrap();
+
+            assert_eq!(rows.len(), 3);
+            let batches: Vec<RecordBatchWithTimestamp> = rows.try_into().unwrap();
+            assert_eq!(batches.len(), 2);
+            assert_eq!(batches[0].batch().num_rows(), 2);
+            assert_eq!(batches[0].start_timestamp(), 1);
+            assert_eq!(batches[0].end_timestamp(), 2);
+            assert_eq!(batches[1].batch().num_rows(), 1);
+            assert_eq!(batches[1].start_timestamp(), 4);
+        }
+    }
+
     fn backfill_test_writer() -> (BulkStreamWriter, mpsc::Receiver<FlightData>) {
         let mut columns = create_timestamp_schema(ColumnDataType::TimestampMillisecond);
         columns[1].data_type = ColumnDataType::String;
@@ -1847,6 +1955,7 @@ mod tests {
             schema_sent: false,
             parallelism: 8,
             timeout: Duration::from_secs(1),
+            max_grpc_send_message_size: usize::MAX,
             pending_requests: HashMap::new(),
             completed_responses: HashMap::new(),
         };
@@ -1899,6 +2008,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_backfill_splits_at_the_clients_grpc_send_limit() {
+        let (mut writer, mut receiver) = backfill_test_writer();
+        writer.max_grpc_send_message_size = 2_300;
+        let mut rows = writer
+            .alloc_backfill_rows_buffer(4, NonZeroUsize::new(4).unwrap(), NonZeroUsize::MAX)
+            .unwrap();
+        for i in 0..4 {
+            rows.add_row(Row::from_values(vec![
+                Value::TimestampMillisecond(i * 3_600_000),
+                Value::String("x".repeat(800)),
+            ]))
+            .unwrap();
+        }
+
+        assert_eq!(writer.write_rows_async(rows).await.unwrap(), [1, 2]);
+        receiver.try_recv().unwrap(); // Schema message
+        for _ in 0..2 {
+            assert!(
+                receiver.try_recv().unwrap().encoded_len() <= writer.max_grpc_send_message_size
+            );
+        }
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_backfill_reports_progress_when_a_later_row_is_oversized() {
+        let (mut writer, mut receiver) = backfill_test_writer();
+        let byte_limit = NonZeroUsize::new(1_000).unwrap();
+        let make_row = |timestamp, size| {
+            Row::from_values(vec![
+                Value::TimestampMillisecond(timestamp),
+                Value::String("x".repeat(size)),
+            ])
+        };
+        let mut rows = writer
+            .alloc_backfill_rows_buffer(3, NonZeroUsize::MIN, byte_limit)
+            .unwrap();
+        rows.add_row(make_row(0, 1)).unwrap();
+        rows.add_row(make_row(3_600_000, 1_000)).unwrap();
+        rows.add_row(make_row(7_200_000, 1)).unwrap();
+
+        let Err(crate::Error::BackfillRowTooLarge {
+            submitted_request_ids,
+            first_unsent_row,
+            ..
+        }) = writer.write_rows_async(rows).await
+        else {
+            panic!("expected an oversized row error");
+        };
+        assert_eq!(first_unsent_row, 1);
+        assert_eq!(submitted_request_ids, [1]);
+        receiver.try_recv().unwrap(); // Schema message
+        receiver.try_recv().unwrap(); // First row
+        assert!(receiver.try_recv().is_err());
+
+        writer.response_stream = futures::stream::iter([Ok(DoPutResponse::new(1, 1))]).boxed();
+        let response = writer
+            .wait_for_response(submitted_request_ids[0])
+            .await
+            .unwrap();
+        assert_eq!(response.affected_rows(), 1);
+
+        let mut retry = writer
+            .alloc_backfill_rows_buffer(2, NonZeroUsize::MIN, byte_limit)
+            .unwrap();
+        retry.add_row(make_row(3_600_000, 1)).unwrap();
+        retry.add_row(make_row(7_200_000, 1)).unwrap();
+        assert_eq!(writer.write_rows_async(retry).await.unwrap(), [2, 3]);
+    }
+
+    #[tokio::test]
     async fn test_backfill_rejects_an_oversized_single_row_before_sending() {
         let (mut writer, mut receiver) = backfill_test_writer();
         let mut rows = writer
@@ -1912,7 +2092,11 @@ mod tests {
 
         assert!(matches!(
             writer.write_rows_async(rows).await,
-            Err(crate::Error::BackfillRowTooLarge { .. })
+            Err(crate::Error::BackfillRowTooLarge {
+                first_unsent_row: 0,
+                submitted_request_ids,
+                ..
+            }) if submitted_request_ids.is_empty()
         ));
         assert!(receiver.try_recv().is_err());
         assert_eq!(writer.next_request_id(), 1);

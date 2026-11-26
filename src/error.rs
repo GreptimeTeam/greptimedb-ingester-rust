@@ -175,8 +175,19 @@ pub enum Error {
         location: Location,
     },
 
-    #[snafu(display("Encoded backfill row is {size} bytes, exceeding the {limit}-byte limit"))]
+    #[snafu(display("Encoded backfill row at offset {first_unsent_row} is {size} bytes, exceeding the {limit}-byte limit"))]
     BackfillRowTooLarge {
+        size: usize,
+        limit: usize,
+        submitted_request_ids: Vec<i64>,
+        first_unsent_row: usize,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Backfill value for column '{column}' is {size} bytes, exceeding Arrow's {limit}-byte offset limit"))]
+    BackfillValueTooLarge {
+        column: String,
         size: usize,
         limit: usize,
         #[snafu(implicit)]
