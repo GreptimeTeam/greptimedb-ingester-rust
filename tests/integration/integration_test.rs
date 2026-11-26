@@ -27,6 +27,7 @@ use greptimedb_ingester::{
     TableSchema,
 };
 use prost::Message;
+use std::num::NonZeroUsize;
 use std::option::Option;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -342,6 +343,25 @@ async fn test_bulk_stream_writer_sequential() -> Result<()> {
             response.affected_rows()
         );
     }
+
+    // Sparse backfill rows span distinct hours and share one Flight request.
+    let mut backfill = bulk_writer.alloc_backfill_rows_buffer(
+        3,
+        NonZeroUsize::new(3).unwrap(),
+        NonZeroUsize::new(16 * 1024).unwrap(),
+    )?;
+    for hours_ago in 1..=3 {
+        backfill.add_row(greptimedb_ingester::Row::from_values(vec![
+            greptimedb_ingester::Value::TimestampMillisecond(current_time - hours_ago * 3_600_000),
+            greptimedb_ingester::Value::String("backfill_sensor".to_string()),
+            greptimedb_ingester::Value::Float64(20.0),
+            greptimedb_ingester::Value::Int64(1),
+        ]))?;
+    }
+    let ids = bulk_writer.write_rows_async(backfill).await?;
+    assert_eq!(ids.len(), 1);
+    let response = bulk_writer.wait_for_response(ids[0]).await?;
+    assert_eq!(response.affected_rows(), 3);
 
     bulk_writer.finish().await?;
 

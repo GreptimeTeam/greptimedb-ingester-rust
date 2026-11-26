@@ -19,6 +19,7 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -41,6 +42,7 @@ use arrow_flight::{FlightData, FlightDescriptor};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use futures::channel::mpsc;
 use futures::{FutureExt, SinkExt, Stream, StreamExt};
+use prost::Message;
 
 use crate::api::v1::ColumnDataType;
 use crate::client::Client;
@@ -290,10 +292,8 @@ impl BulkStreamWriter {
 
     /// Write rows to the stream using the fixed table schema
     ///
-    /// When the input `Rows` spans multiple time windows, it is split into
-    /// one request per window. This method waits for all of them and returns
-    /// a single `DoPutResponse` whose `affected_rows` is the sum across all
-    /// windows and whose `request_id` is that of the last submitted request.
+    /// This method waits for all batches and returns a single `DoPutResponse`
+    /// with the total affected rows and the last submitted request ID.
     pub async fn write_rows(&mut self, rows: Rows) -> Result<DoPutResponse> {
         let request_ids = self.write_rows_async(rows).await?;
 
@@ -309,22 +309,45 @@ impl BulkStreamWriter {
 
     /// Submit rows for writing without waiting for responses.
     ///
-    /// When the input `Rows` spans multiple time windows, it is split into
-    /// one request per window. The returned vector contains one `request_id`
-    /// per submitted request, in submission order, each of which can be used
-    /// with `wait_for_response` to retrieve the corresponding result.
+    /// By default, each occupied hour produces one request. Backfill buffers
+    /// use row and encoded message size limits. The returned request IDs are
+    /// in submission order and can be used with `wait_for_response`. If an
+    /// error occurs, some earlier batches may already have been submitted.
     pub async fn write_rows_async(&mut self, rows: Rows) -> Result<Vec<RequestId>> {
         // Ensure that the rows are not empty
         ensure!(!rows.is_empty(), error::EmptyRowsSnafu);
         // Validate that the rows schema matches the writer's schema
         self.validate_rows_schema(&rows)?;
 
-        let batches_with_timestamp: Vec<RecordBatchWithTimestamp> = rows.try_into()?;
-        ensure!(!batches_with_timestamp.is_empty(), error::EmptyRowsSnafu);
-
-        let mut request_ids = Vec::with_capacity(batches_with_timestamp.len());
-        for batch_with_ts in batches_with_timestamp {
-            let request_id = self.submit_record_batch(batch_with_ts).await?;
+        let max_message_bytes = match rows.batching {
+            Batching::Hourly { .. } => None,
+            Batching::Backfill {
+                max_message_bytes, ..
+            } => Some(max_message_bytes.get()),
+        };
+        let timestamp_index = rows.timestamp_column_index;
+        let mut batches: Vec<RecordBatchWithTimestamp> = rows.try_into()?;
+        let mut request_ids = Vec::with_capacity(batches.len());
+        batches.reverse();
+        while let Some(batch) = batches.pop() {
+            let request_id = self.next_request_id();
+            let data = self.encode_record_batch(&batch, request_id)?;
+            if let Some(limit) = max_message_bytes {
+                let size = data.encoded_len();
+                if size > limit {
+                    let row_count = batch.batch().num_rows();
+                    ensure!(
+                        row_count > 1,
+                        error::BackfillRowTooLargeSnafu { size, limit }
+                    );
+                    let midpoint = row_count / 2;
+                    batches.push(batch.slice(midpoint, row_count - midpoint, timestamp_index));
+                    batches.push(batch.slice(0, midpoint, timestamp_index));
+                    continue;
+                }
+            }
+            self.submit_record_batch(batch.batch().schema(), data, request_id)
+                .await?;
             request_ids.push(request_id);
         }
 
@@ -488,6 +511,26 @@ impl BulkStreamWriter {
         Rows::with_arrow_schema(self.column_schemas(), self.arrow_schema.clone(), capacity)
     }
 
+    /// Allocate a buffer for writing rows that span many time windows.
+    ///
+    /// Each request contains at most `max_rows` rows. A batch whose encoded
+    /// FlightData message exceeds `max_message_bytes` is split before sending.
+    /// Choose a byte limit within the applicable gRPC message limits. If a
+    /// single row exceeds the limit, writing it returns an error.
+    pub fn alloc_backfill_rows_buffer(
+        &self,
+        capacity: usize,
+        max_rows: NonZeroUsize,
+        max_message_bytes: NonZeroUsize,
+    ) -> Result<Rows> {
+        let mut rows = self.alloc_rows_buffer(capacity)?;
+        rows.batching = Batching::Backfill {
+            max_rows,
+            max_message_bytes,
+        };
+        Ok(rows)
+    }
+
     /// Create a new Row builder that is compatible with this writer's schema
     /// Returns a `RowBuilder` that can efficiently build rows for this writer
     /// Uses O(1) field name lookup for optimal performance
@@ -560,16 +603,35 @@ impl BulkStreamWriter {
         Ok(())
     }
 
-    /// Submit a record batch with timestamp range without waiting for response
-    /// Returns the `request_id` for later tracking
+    fn encode_record_batch(
+        &mut self,
+        batch: &RecordBatchWithTimestamp,
+        request_id: RequestId,
+    ) -> Result<FlightData> {
+        let mut data = self
+            .encoder
+            .encode(FlightMessage::RecordBatch(batch.batch().clone()));
+        let metadata = DoPutMetadata::new(
+            request_id,
+            Some(batch.start_timestamp()),
+            Some(batch.end_timestamp()),
+        );
+        data.app_metadata = serde_json::to_vec(&metadata)
+            .context(error::SerializeMetadataSnafu)?
+            .into();
+        Ok(data)
+    }
+
+    /// Submit an encoded batch without waiting for its response.
     async fn submit_record_batch(
         &mut self,
-        batch_with_ts: RecordBatchWithTimestamp,
-    ) -> Result<RequestId> {
+        schema: Arc<Schema>,
+        data: FlightData,
+        request_id: RequestId,
+    ) -> Result<()> {
         // Send schema first if not already sent
         if !self.schema_sent {
-            let batch = batch_with_ts.batch();
-            let mut schema_data = self.encoder.encode(FlightMessage::Schema(batch.schema()));
+            let mut schema_data = self.encoder.encode(FlightMessage::Schema(schema));
             let metadata = DoPutMetadata::new(0, None, None);
             schema_data.app_metadata = serde_json::to_vec(&metadata)
                 .context(error::SerializeMetadataSnafu)?
@@ -609,26 +671,13 @@ impl BulkStreamWriter {
             self.process_pending_responses().await?;
         }
 
-        // Send the request with time range metadata
-        let request_id = self.next_request_id();
-        let batch = batch_with_ts.batch().clone();
-        let message = FlightMessage::RecordBatch(batch);
-        let mut data = self.encoder.encode(message);
-        let metadata = DoPutMetadata::new(
-            request_id,
-            Some(batch_with_ts.start_timestamp()),
-            Some(batch_with_ts.end_timestamp()),
-        );
-        data.app_metadata = serde_json::to_vec(&metadata)
-            .context(error::SerializeMetadataSnafu)?
-            .into();
-
         self.sender.send(data).await.context(error::SendDataSnafu)?;
 
-        // Track this request but don't wait for response
+        // Track this request but don't wait for response.
+        self.next_request_id = request_id;
         self.pending_requests.insert(request_id, Instant::now());
 
-        Ok(request_id)
+        Ok(())
     }
 
     /// Check for timed out requests
@@ -732,13 +781,12 @@ impl BulkStreamWriter {
         .fail()
     }
 
-    fn next_request_id(&mut self) -> RequestId {
-        // Skip ID 0 as it's reserved for special cases
-        self.next_request_id = self.next_request_id.wrapping_add(1);
-        if self.next_request_id == 0 {
-            self.next_request_id = 1;
+    fn next_request_id(&self) -> RequestId {
+        // Skip ID 0 as it's reserved for special cases.
+        match self.next_request_id.wrapping_add(1) {
+            0 => 1,
+            id => id,
         }
-        self.next_request_id
     }
 }
 
@@ -830,78 +878,59 @@ fn column_to_arrow_data_type(column: &Column) -> Result<DataType> {
     })
 }
 
-/// High-level rows abstraction with buffered batch conversion
-/// This provides a user-friendly API while maintaining optimal performance
-///
-/// Supports automatic time windowing: rows are partitioned by timestamp into separate
-/// time windows. Each window is converted to a separate RecordBatch with time range metadata.
-/// Default time window duration is 1 hour.
+/// A buffer of rows for bulk inserts. By default, each occupied hour is
+/// converted to its own RecordBatch with time range metadata.
 #[derive(Debug)]
 pub struct Rows {
     schema: Arc<Schema>,
-    column_schemas: Vec<Column>, // Store column schemas for creating window builders
-    column_count: usize,
-    // Time windowing configuration
-    time_window_duration: i64,
+    column_schemas: Vec<Column>,
     timestamp_column_index: usize,
-    time_windows: HashMap<TimeWindowKey, RowBatchBuilder>,
-    default_capacity: usize,
+    batching: Batching,
+    batches: Vec<RowBatchBuilder>,
+    row_count: usize,
+    capacity: usize,
+}
+
+#[derive(Debug)]
+enum Batching {
+    Hourly {
+        duration: i64,
+        windows: HashMap<i64, usize>,
+    },
+    Backfill {
+        max_rows: NonZeroUsize,
+        max_message_bytes: NonZeroUsize,
+    },
 }
 
 impl Rows {
-    /// Create a new Rows collection with the given schema and capacity
-    ///
-    /// Automatically detects the timestamp column (first column with SemanticType::Timestamp)
-    /// and initializes time windowing with a default duration of 1 hour.
+    /// Create an hourly rows buffer with the given schema and capacity hint.
     pub fn new(column_schemas: &[Column], capacity: usize) -> Result<Self> {
-        let builder = RowBatchBuilder::new(column_schemas, capacity)?;
-        let schema = builder.schema.clone();
+        let fields = column_schemas
+            .iter()
+            .map(column_to_arrow_field)
+            .collect::<Result<Vec<_>>>()?;
+        Self::with_arrow_schema(column_schemas, Arc::new(Schema::new(fields)), capacity)
+    }
 
-        // Find timestamp column index
-        let (timestamp_column_index, time_window_duration) =
-            find_timestamp_index_and_window(column_schemas)?;
-
+    fn with_arrow_schema(
+        column_schemas: &[Column],
+        schema: Arc<Schema>,
+        capacity: usize,
+    ) -> Result<Self> {
+        let (timestamp_column_index, duration) = find_timestamp_index_and_window(column_schemas)?;
         Ok(Self {
             schema,
             column_schemas: column_schemas.to_vec(),
-            column_count: column_schemas.len(),
-            time_window_duration,
             timestamp_column_index,
-            time_windows: HashMap::new(),
-            default_capacity: capacity,
+            batching: Batching::Hourly {
+                duration,
+                windows: HashMap::new(),
+            },
+            batches: Vec::new(),
+            row_count: 0,
+            capacity,
         })
-    }
-
-    /// Create a new Rows collection with a pre-computed Arrow schema
-    ///
-    /// Automatically detects the timestamp column (first column with SemanticType::Timestamp)
-    /// and initializes time windowing with a default duration of 1 hour.
-    fn with_arrow_schema(
-        column_schemas: &[Column],
-        arrow_schema: Arc<Schema>,
-        capacity: usize,
-    ) -> Result<Self> {
-        // Find timestamp column index
-        let (timestamp_column_index, time_window_duration) =
-            find_timestamp_index_and_window(column_schemas)?;
-
-        Ok(Self {
-            schema: arrow_schema,
-            column_schemas: column_schemas.to_vec(),
-            column_count: column_schemas.len(),
-            time_window_duration,
-            timestamp_column_index,
-            time_windows: HashMap::new(),
-            default_capacity: capacity,
-        })
-    }
-
-    /// Calculate the time window key for a given timestamp in nanoseconds
-    fn calculate_window_key(&self, timestamp: i64) -> TimeWindowKey {
-        timestamp
-            .checked_div_euclid(self.time_window_duration)
-            .and_then(|v| v.checked_mul(self.time_window_duration))
-            .unwrap_or(i64::MIN)
     }
 
     /// Extract timestamp from a row.
@@ -912,66 +941,81 @@ impl Rows {
             .context(error::NullTimestampSnafu)
     }
 
-    /// Add a row to the collection using move semantics
-    ///
-    /// Rows are automatically partitioned into time windows based on their timestamp.
-    /// A timestamp column is required; if it is missing when building the inserter,
-    /// an error is returned.
+    /// Add a row to the buffer. The time index must be present and non-null.
     pub fn add_row(&mut self, row: Row) -> Result<()> {
-        // Validate column count matches schema
         ensure!(
-            row.len() == self.column_count,
+            row.len() == self.column_schemas.len(),
             error::InvalidColumnCountSnafu {
-                expected: self.column_count,
+                expected: self.column_schemas.len(),
                 actual: row.len(),
             }
         );
 
-        let window_key = self.calculate_window_key(self.extract_timestamp(&row)?);
-        let mut binding = self.time_windows.entry(window_key);
-        let buffer = match binding {
-            Entry::Occupied(ref mut e) => e.get_mut(),
-            Entry::Vacant(v) => v.insert(RowBatchBuilder::new(
-                &self.column_schemas,
-                Self::window_initial_capacity(self.default_capacity),
-            )?),
+        let timestamp = self.extract_timestamp(&row)?;
+        let batch = match &mut self.batching {
+            Batching::Hourly { duration, windows } => {
+                let window = timestamp
+                    .div_euclid(*duration)
+                    .checked_mul(*duration)
+                    .unwrap_or(i64::MIN);
+                let index = match windows.entry(window) {
+                    Entry::Occupied(entry) => *entry.get(),
+                    Entry::Vacant(entry) => {
+                        let index = self.batches.len();
+                        // The caller's capacity describes the whole buffer.
+                        let batch = RowBatchBuilder::new(
+                            &self.column_schemas,
+                            self.schema.clone(),
+                            self.timestamp_column_index,
+                            self.capacity.min(1),
+                        )?;
+                        self.batches.push(batch);
+                        entry.insert(index);
+                        index
+                    }
+                };
+                &mut self.batches[index]
+            }
+            Batching::Backfill { max_rows, .. } => {
+                let index = self.row_count / max_rows.get();
+                if index == self.batches.len() {
+                    self.batches.push(RowBatchBuilder::new(
+                        &self.column_schemas,
+                        self.schema.clone(),
+                        self.timestamp_column_index,
+                        self.capacity
+                            .saturating_sub(self.row_count)
+                            .min(max_rows.get()),
+                    )?);
+                }
+                &mut self.batches[index]
+            }
         };
-
-        buffer.add_row(&row)?;
+        batch.add_row(&row)?;
+        self.row_count += 1;
         Ok(())
     }
 
-    /// Get the current number of rows
+    /// Get the current number of rows.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.time_windows.values().map(|b| b.len()).sum()
+        self.row_count
     }
 
-    /// Check if the collection is empty
+    /// Check if the collection is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    // Note: No capacity limits - can grow dynamically as needed
-
-    /// Get the schema
+    /// Get the schema.
     #[must_use]
     pub fn schema(&self) -> &Schema {
         &self.schema
     }
-
-    fn window_initial_capacity(default_capacity: usize) -> usize {
-        default_capacity.min(MAX_WINDOW_INITIAL_CAPACITY)
-    }
 }
 
-/// Time window key type - represents window start time in nanoseconds
-type TimeWindowKey = i64;
-const MAX_WINDOW_INITIAL_CAPACITY: usize = 1024;
-
 /// Record batch with timestamp range metadata
-/// Represents a RecordBatch that belongs to a specific time window.
 ///
 /// `start_timestamp` and `end_timestamp` are in the timestamp column's native
 /// unit (as declared in the table schema), not normalized to a single unit.
@@ -1009,18 +1053,28 @@ impl RecordBatchWithTimestamp {
     pub fn batch(&self) -> &RecordBatch {
         &self.batch
     }
+
+    fn slice(&self, offset: usize, len: usize, timestamp_index: usize) -> Self {
+        let batch = self.batch.slice(offset, len);
+        // The time index is a non-null Arrow timestamp, stored as native i64.
+        let data = batch.column(timestamp_index).to_data();
+        let (min, max) = data.buffer::<i64>(0)[..len]
+            .iter()
+            .fold((i64::MAX, i64::MIN), |(min, max), &ts| {
+                (min.min(ts), max.max(ts))
+            });
+        Self::new(batch, min, max)
+    }
 }
 
-/// Convert Rows to Vec<RecordBatchWithTimestamp>, handling buffered data and time windowing
+/// Convert buffered rows to record batches with timestamp ranges.
 impl TryFrom<Rows> for Vec<RecordBatchWithTimestamp> {
     type Error = crate::Error;
 
     fn try_from(rows: Rows) -> Result<Self> {
-        // Build RecordBatch for each time window
-        let mut batches = Vec::with_capacity(rows.time_windows.len());
+        let mut batches = Vec::with_capacity(rows.batches.len());
 
-        for builder in rows.time_windows.into_values() {
-            // Skip empty windows
+        for builder in rows.batches {
             if builder.is_empty() {
                 continue;
             }
@@ -1052,24 +1106,17 @@ pub struct RowBatchBuilder {
 }
 
 impl RowBatchBuilder {
-    /// Create a new RowBatchBuilder with the given schema and capacity
-    fn new(column_schemas: &[Column], capacity: usize) -> Result<Self> {
-        let mut fields = Vec::with_capacity(column_schemas.len());
-        let mut timestamp_index_opt = None;
-        for (idx, col) in column_schemas.iter().enumerate() {
-            if col.semantic_type == SemanticType::Timestamp {
-                timestamp_index_opt = Some(idx);
-            }
-            fields.push(column_to_arrow_field(col)?);
-        }
-        let schema = Arc::new(Schema::new(fields));
-
+    fn new(
+        column_schemas: &[Column],
+        schema: Arc<Schema>,
+        timestamp_idx: usize,
+        capacity: usize,
+    ) -> Result<Self> {
         let builders: Result<Vec<ArrayBuilderEnum>> = column_schemas
             .iter()
             .enumerate()
             .map(|(col_idx, col)| create_array_builder(col, capacity, col_idx))
             .collect();
-        let timestamp_idx = timestamp_index_opt.context(error::MissingTimestampColumnSnafu)?;
 
         Ok(Self {
             builders: builders?,
@@ -1107,11 +1154,6 @@ impl RowBatchBuilder {
             .collect();
 
         RecordBatch::try_new(self.schema, arrays?).context(error::CreateRecordBatchSnafu)
-    }
-
-    /// Get the current number of rows in the builder
-    fn len(&self) -> usize {
-        self.current_rows
     }
 
     /// Check if the builder is empty (has no rows)
@@ -1661,7 +1703,9 @@ mod tests {
             },
         ];
 
-        let mut builder = RowBatchBuilder::new(&schema, 10).expect("Failed to create builder");
+        let rows = Rows::new(&schema, 10).unwrap();
+        let mut builder =
+            RowBatchBuilder::new(&schema, rows.schema, rows.timestamp_column_index, 10).unwrap();
 
         // Initially, min should be MAX and max should be MIN
         assert_eq!(builder.min_timestamp, i64::MAX);
@@ -1701,7 +1745,7 @@ mod tests {
         assert_eq!(builder.max_timestamp, 2000);
 
         // Verify row count
-        assert_eq!(builder.len(), 4);
+        assert_eq!(builder.build().unwrap().num_rows(), 4);
     }
 
     #[test]
@@ -1755,10 +1799,123 @@ mod tests {
     }
 
     #[test]
-    fn test_window_initial_capacity_is_capped_per_window() {
-        assert_eq!(Rows::window_initial_capacity(0), 0);
-        assert_eq!(Rows::window_initial_capacity(32), 32);
-        assert_eq!(Rows::window_initial_capacity(10_000), 1024);
+    fn test_sparse_hourly_batches_use_small_builders_and_share_schema() {
+        let mut columns = create_timestamp_schema(ColumnDataType::TimestampMillisecond);
+        columns[1].data_type = ColumnDataType::String;
+        let mut rows = Rows::new(&columns, 2_048).unwrap();
+        for hour in 0..2_048 {
+            rows.add_row(Row::from_values(vec![
+                Value::TimestampMillisecond(hour * 3_600_000),
+                Value::String("abcdefgh".to_string()),
+            ]))
+            .unwrap();
+        }
+
+        assert_eq!(rows.len(), 2_048);
+        let schema = rows.schema.clone();
+        let batches: Vec<RecordBatchWithTimestamp> = rows.try_into().unwrap();
+        assert_eq!(batches.len(), 2_048);
+        for batch in batches {
+            assert_eq!(batch.batch().num_rows(), 1);
+            assert_eq!(batch.start_timestamp(), batch.end_timestamp());
+            assert!(Arc::ptr_eq(&schema, &batch.batch().schema()));
+            assert!(batch.batch().column(1).get_buffer_memory_size() < 512);
+        }
+    }
+
+    fn backfill_test_writer() -> (BulkStreamWriter, mpsc::Receiver<FlightData>) {
+        let mut columns = create_timestamp_schema(ColumnDataType::TimestampMillisecond);
+        columns[1].data_type = ColumnDataType::String;
+        let arrow_schema = Rows::new(&columns, 0).unwrap().schema;
+        let table_schema = TableSchema::builder()
+            .name("backfill")
+            .columns(columns)
+            .build()
+            .unwrap();
+        let (sender, receiver) = mpsc::channel(8);
+        let response_stream = futures::stream::iter([Ok(DoPutResponse::new(0, 0))])
+            .chain(futures::stream::pending())
+            .boxed();
+        let writer = BulkStreamWriter {
+            sender,
+            response_stream,
+            table_schema,
+            arrow_schema,
+            field_map: HashMap::new(),
+            next_request_id: 0,
+            encoder: FlightEncoder::without_compression(),
+            schema_sent: false,
+            parallelism: 8,
+            timeout: Duration::from_secs(1),
+            pending_requests: HashMap::new(),
+            completed_responses: HashMap::new(),
+        };
+        (writer, receiver)
+    }
+
+    #[tokio::test]
+    async fn test_backfill_respects_row_and_message_limits() {
+        let (mut writer, mut receiver) = backfill_test_writer();
+        let byte_limit = NonZeroUsize::new(2_300).unwrap();
+        let mut rows = writer
+            .alloc_backfill_rows_buffer(6, NonZeroUsize::new(4).unwrap(), byte_limit)
+            .unwrap();
+        let timestamps = [0, 7_200_000, -3_600_000, 3_600_000, 14_400_000, 10_800_000];
+        for (index, timestamp) in timestamps.into_iter().enumerate() {
+            rows.add_row(Row::from_values(vec![
+                Value::TimestampMillisecond(timestamp),
+                Value::String(index.to_string().repeat(800)),
+            ]))
+            .unwrap();
+        }
+
+        let ids = writer.write_rows_async(rows).await.unwrap();
+        assert_eq!(ids, [1, 2, 3]);
+
+        let schema_message = receiver.try_recv().unwrap();
+        let schema = Schema::try_from(&schema_message).unwrap();
+        for (id, expected) in ids.into_iter().zip(timestamps.chunks_exact(2)) {
+            let data = receiver.try_recv().unwrap();
+            assert!(data.encoded_len() <= byte_limit.get());
+            let metadata: DoPutMetadata = serde_json::from_slice(&data.app_metadata).unwrap();
+            assert_eq!(metadata.request_id(), id);
+            assert_eq!(metadata.min_timestamp(), expected.iter().min().copied());
+            assert_eq!(metadata.max_timestamp(), expected.iter().max().copied());
+
+            let batch = arrow_flight::utils::flight_data_to_arrow_batch(
+                &data,
+                Arc::new(schema.clone()),
+                &HashMap::new(),
+            )
+            .unwrap();
+            let timestamps = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow_array::TimestampMillisecondArray>()
+                .unwrap();
+            assert_eq!(timestamps.values().as_ref(), expected);
+        }
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_backfill_rejects_an_oversized_single_row_before_sending() {
+        let (mut writer, mut receiver) = backfill_test_writer();
+        let mut rows = writer
+            .alloc_backfill_rows_buffer(1, NonZeroUsize::MIN, NonZeroUsize::MIN)
+            .unwrap();
+        rows.add_row(Row::from_values(vec![
+            Value::TimestampMillisecond(0),
+            Value::String("value".to_string()),
+        ]))
+        .unwrap();
+
+        assert!(matches!(
+            writer.write_rows_async(rows).await,
+            Err(crate::Error::BackfillRowTooLarge { .. })
+        ));
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(writer.next_request_id(), 1);
     }
 
     #[test]

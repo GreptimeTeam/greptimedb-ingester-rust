@@ -175,6 +175,14 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Encoded backfill row is {size} bytes, exceeding the {limit}-byte limit"))]
+    BackfillRowTooLarge {
+        size: usize,
+        limit: usize,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("Cannot write empty rows"))]
     EmptyRows {
         #[snafu(implicit)]
