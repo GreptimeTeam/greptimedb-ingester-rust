@@ -34,7 +34,7 @@ use tonic::transport::Channel;
 use crate::client::Client;
 use crate::error::{self, IllegalDatabaseResponseSnafu};
 use crate::flight::do_put::DoPutResponse;
-use crate::{consts, Result};
+use crate::{consts, GrpcCompression, Result};
 
 type FlightDataStream = Pin<Box<dyn Stream<Item = FlightData> + Send>>;
 
@@ -131,8 +131,11 @@ impl Database {
         self.handle(Request::Deletes(request), &[]).await
     }
 
-    pub(crate) fn max_grpc_send_message_size(&self) -> usize {
-        self.client.max_grpc_send_message_size()
+    pub(crate) fn grpc_send_settings(&self) -> (usize, Option<GrpcCompression>) {
+        (
+            self.client.max_grpc_send_message_size(),
+            self.client.grpc_send_compression(),
+        )
     }
 
     /// Ingest a stream of [RecordBatch]es that belong to a table, using Arrow Flight's "`DoPut`"

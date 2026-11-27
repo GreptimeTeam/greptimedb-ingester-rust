@@ -175,6 +175,13 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Failed to measure compressed gRPC message size"))]
+    MeasureGrpcMessageSize {
+        source: io::Error,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("Encoded backfill row at offset {first_unsent_row} is {size} bytes, exceeding the {limit}-byte limit"))]
     BackfillRowTooLarge {
         size: usize,

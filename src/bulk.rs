@@ -50,7 +50,7 @@ use crate::database::Database;
 use crate::flight::do_put::{DoPutMetadata, DoPutResponse};
 use crate::flight::{FlightEncoder, FlightMessage};
 use crate::table::{Column, DataTypeExtension, Row, TableSchema, Value};
-use crate::{error, Result};
+use crate::{error, GrpcCompression, Result};
 use snafu::{ensure, OptionExt, ResultExt};
 
 /// Default channel buffer size for streaming FlightData
@@ -209,6 +209,7 @@ pub struct BulkStreamWriter {
     parallelism: usize,
     timeout: Duration,
     max_grpc_send_message_size: usize,
+    grpc_send_compression: Option<GrpcCompression>,
     // Track pending requests: request_id -> sent_time
     pending_requests: HashMap<RequestId, Instant>,
     // Cache completed responses that were processed but not yet retrieved
@@ -274,6 +275,7 @@ impl BulkStreamWriter {
         let flight_stream = receiver.boxed();
         let hints = [auto_create_table_hint(auto_create_table)];
         let response_stream = database.do_put_with_hints(flight_stream, &hints).await?;
+        let (max_grpc_send_message_size, grpc_send_compression) = database.grpc_send_settings();
 
         Ok(Self {
             sender,
@@ -286,7 +288,8 @@ impl BulkStreamWriter {
             schema_sent: false,
             parallelism: options.parallelism,
             timeout: options.timeout,
-            max_grpc_send_message_size: database.max_grpc_send_message_size(),
+            max_grpc_send_message_size,
+            grpc_send_compression,
             pending_requests: HashMap::new(),
             completed_responses: HashMap::new(),
         })
@@ -329,7 +332,7 @@ impl BulkStreamWriter {
             Batching::Hourly { .. } => None,
             Batching::Backfill {
                 max_message_bytes, ..
-            } => Some(max_message_bytes.get().min(self.max_grpc_send_message_size)),
+            } => Some(max_message_bytes.get()),
         };
         let timestamp_index = rows.timestamp_column_index;
         let mut batches: Vec<RecordBatchWithTimestamp> = rows.try_into()?;
@@ -340,9 +343,10 @@ impl BulkStreamWriter {
             let row_count = batch.batch().num_rows();
             let request_id = self.next_request_id();
             let data = self.encode_record_batch(&batch, request_id)?;
-            if let Some(limit) = max_message_bytes {
-                let size = data.encoded_len();
-                if size > limit {
+            if let Some(max_message_bytes) = max_message_bytes {
+                if let Some((size, limit)) =
+                    self.backfill_size_violation(&data, max_message_bytes)?
+                {
                     if row_count == 1 {
                         return error::BackfillRowTooLargeSnafu {
                             size,
@@ -526,11 +530,11 @@ impl BulkStreamWriter {
 
     /// Allocate a buffer for writing rows that span many time windows.
     ///
-    /// Each request contains at most `max_rows` rows. A batch whose encoded
-    /// FlightData message exceeds the lower of `max_message_bytes` and the
-    /// client's gRPC send limit is split before sending. Set
-    /// `max_message_bytes` within the server's receive limit. If a single row
-    /// exceeds the effective limit, writing it returns an error.
+    /// Each request contains at most `max_rows` rows. The byte cap applies to
+    /// the encoded FlightData before gRPC compression. The client's gRPC send
+    /// limit applies after transport compression, when enabled. A batch that
+    /// exceeds either limit is split before sending. If a single row exceeds
+    /// either limit, writing it returns an error.
     pub fn alloc_backfill_rows_buffer(
         &self,
         capacity: usize,
@@ -615,6 +619,24 @@ impl BulkStreamWriter {
             .fail();
         }
         Ok(())
+    }
+
+    fn backfill_size_violation(
+        &self,
+        data: &FlightData,
+        max_message_bytes: usize,
+    ) -> Result<Option<(usize, usize)>> {
+        let payload_size = data.encoded_len();
+        if payload_size > max_message_bytes {
+            return Ok(Some((payload_size, max_message_bytes)));
+        }
+
+        let transport_size = match self.grpc_send_compression {
+            None => payload_size,
+            Some(compression) => grpc_compressed_size(data, compression)?,
+        };
+        let transport_limit = self.max_grpc_send_message_size.min(u32::MAX as usize);
+        Ok((transport_size > transport_limit).then_some((transport_size, transport_limit)))
     }
 
     fn encode_record_batch(
@@ -802,6 +824,26 @@ impl BulkStreamWriter {
             id => id,
         }
     }
+}
+
+// Match Tonic's transport encoders and count the compressed protobuf bytes
+// without storing their output. Tonic checks this size before adding the frame header.
+fn grpc_compressed_size(data: &FlightData, compression: GrpcCompression) -> Result<usize> {
+    let bytes = data.encode_to_vec();
+    let mut sink = std::io::sink();
+    let size = match compression {
+        GrpcCompression::Gzip => {
+            let mut encoder =
+                flate2::read::GzEncoder::new(bytes.as_slice(), flate2::Compression::new(6));
+            std::io::copy(&mut encoder, &mut sink)
+        }
+        GrpcCompression::Zstd => {
+            zstd::stream::read::Encoder::new(bytes.as_slice(), zstd::DEFAULT_COMPRESSION_LEVEL)
+                .and_then(|mut encoder| std::io::copy(&mut encoder, &mut sink))
+        }
+    }
+    .context(error::MeasureGrpcMessageSizeSnafu)?;
+    Ok(usize::try_from(size).unwrap_or(usize::MAX))
 }
 
 /// Convert a table column to an Arrow field, attaching the GreptimeDB metadata
@@ -1956,6 +1998,7 @@ mod tests {
             parallelism: 8,
             timeout: Duration::from_secs(1),
             max_grpc_send_message_size: usize::MAX,
+            grpc_send_compression: None,
             pending_requests: HashMap::new(),
             completed_responses: HashMap::new(),
         };
@@ -2030,6 +2073,44 @@ mod tests {
             );
         }
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_backfill_applies_payload_and_transport_limits_separately() {
+        for compression in [GrpcCompression::Gzip, GrpcCompression::Zstd] {
+            let (mut writer, mut receiver) = backfill_test_writer();
+            writer.grpc_send_compression = Some(compression);
+            writer.max_grpc_send_message_size = 1_000;
+
+            for (payload_limit, expected_ids) in [(8_000, &[1][..]), (4_000, &[2, 3][..])] {
+                let mut rows = writer
+                    .alloc_backfill_rows_buffer(
+                        2,
+                        NonZeroUsize::new(2).unwrap(),
+                        NonZeroUsize::new(payload_limit).unwrap(),
+                    )
+                    .unwrap();
+                for timestamp in [0, 3_600_000] {
+                    rows.add_row(Row::from_values(vec![
+                        Value::TimestampMillisecond(timestamp),
+                        Value::String("x".repeat(2_000)),
+                    ]))
+                    .unwrap();
+                }
+                assert_eq!(writer.write_rows_async(rows).await.unwrap(), expected_ids);
+            }
+
+            receiver.try_recv().unwrap(); // Schema message
+            for _ in 0..3 {
+                let data = receiver.try_recv().unwrap();
+                assert!(data.encoded_len() > writer.max_grpc_send_message_size);
+                assert!(
+                    grpc_compressed_size(&data, compression).unwrap()
+                        <= writer.max_grpc_send_message_size
+                );
+            }
+            assert!(receiver.try_recv().is_err());
+        }
     }
 
     #[tokio::test]

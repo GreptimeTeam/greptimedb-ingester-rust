@@ -32,6 +32,7 @@ base64 = "0.22"
 dashmap = "6.1"
 enum_dispatch = "0.3"
 flatbuffers = "24"
+flate2 = "1.0"
 futures = "0.3"
 futures-util  = "0.3"
 greptime-proto = "0.1.0"
@@ -50,6 +51,7 @@ tonic = { version = "0.14", features = ["gzip", "zstd"] }
 tower = "0.5"
 derive_builder = "0.20"
 toml = "0.9.8"
+zstd = "0.14.3"
 
 [dev-dependencies]
 hyper-util = "0.1"

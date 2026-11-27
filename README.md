@@ -194,10 +194,10 @@ For backfills with timestamps spread across many hours, use
 `alloc_backfill_rows_buffer(capacity, max_rows, max_message_bytes)` with the usual
 `write_rows` or `write_rows_async` methods. Both limits take a `NonZeroUsize`.
 Each request can span multiple hours and is capped by rows and encoded
-FlightData size. The SDK also applies the client's gRPC send limit. Set the
-byte limit within the server's gRPC receive limit. If a single row is too
-large, `BackfillRowTooLarge` reports the submitted request IDs and the zero-based
-offset of the first unsent row. Submit large imports in multiple buffers to
+FlightData size before gRPC compression. The SDK also checks the client's
+gRPC send limit against the compressed message when transport compression is
+enabled. If a single row is too large, `BackfillRowTooLarge` reports the
+submitted request IDs and the zero-based offset of the first unsent row. Submit large imports in multiple buffers to
 bound the amount of data held by the client at once.
 
 ## When to Choose Which API
