@@ -12,17 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::num::NonZeroUsize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use greptimedb_ingester::api::v1::{Row, RowInsertRequest, RowInsertRequests, Rows};
+use greptimedb_ingester::bulk::RecordBatchWithTimestamp;
 use greptimedb_ingester::client::Client;
 use greptimedb_ingester::database::Database;
+use greptimedb_ingester::flight::do_put::DoPutMetadata;
+use greptimedb_ingester::flight::{FlightEncoder, FlightMessage};
 use greptimedb_ingester::helpers::schema::{field, timestamp};
-use greptimedb_ingester::helpers::values::{f64_value, string_value, timestamp_millisecond_value};
+use greptimedb_ingester::helpers::values::{
+    binary_value, f64_value, string_value, timestamp_millisecond_value,
+};
 use greptimedb_ingester::{
     BulkInserter, BulkWriteOptions, ChannelConfig, ChannelManager, ColumnDataType, CompressionType,
     GrpcCompression, Row as BulkRow, TableSchema, Value,
 };
+use prost::Message;
+use rand::{rngs::StdRng, RngCore, SeedableRng};
 use uuid::Uuid;
 
 struct TestConfig {
@@ -187,6 +195,96 @@ async fn test_bulk_insert_with_gzip_grpc_compression() {
         "grpc_bulk_compression",
     )
     .await;
+}
+
+#[tokio::test]
+async fn test_backfill_splits_when_grpc_gzip_expands_the_message() {
+    let config = TestConfig::from_env();
+    let table_name = unique_table_name("backfill_gzip");
+    let table = TableSchema::builder()
+        .name(&table_name)
+        .build()
+        .unwrap()
+        .add_timestamp("ts", ColumnDataType::TimestampMillisecond)
+        .add_field("data", ColumnDataType::Binary);
+    let database = Database::new_with_dbname(&config.database, make_client(&config, None));
+    database
+        .insert(RowInsertRequests {
+            inserts: vec![RowInsertRequest {
+                table_name,
+                rows: Some(Rows {
+                    schema: vec![
+                        timestamp("ts", ColumnDataType::TimestampMillisecond),
+                        field("data", ColumnDataType::Binary),
+                    ],
+                    rows: vec![Row {
+                        values: vec![timestamp_millisecond_value(0), binary_value(vec![0])],
+                    }],
+                }),
+            }],
+        })
+        .await
+        .unwrap();
+
+    let mut rng = StdRng::seed_from_u64(42);
+    let input: Vec<_> = (1..=2)
+        .map(|ts| {
+            let mut bytes = vec![0; 2 * 1024 * 1024];
+            rng.fill_bytes(&mut bytes);
+            BulkRow::from_values(vec![Value::TimestampMillisecond(ts), Value::Binary(bytes)])
+        })
+        .collect();
+    let mut same_hour = greptimedb_ingester::Rows::new(table.columns(), input.len()).unwrap();
+    for row in &input {
+        same_hour.add_row(row.clone()).unwrap();
+    }
+    let batches: Vec<RecordBatchWithTimestamp> = same_hour.try_into().unwrap();
+    let mut flight_data = FlightEncoder::without_compression()
+        .encode(FlightMessage::RecordBatch(batches[0].batch().clone()));
+    flight_data.app_metadata = serde_json::to_vec(&DoPutMetadata::new(1, Some(1), Some(2)))
+        .unwrap()
+        .into();
+    let client_limit = flight_data.encoded_len() + 1;
+    let encoded = flight_data.encode_to_vec();
+    let mut gzip = flate2::read::GzEncoder::new(encoded.as_slice(), flate2::Compression::new(6));
+    let compressed_size = std::io::copy(&mut gzip, &mut std::io::sink()).unwrap();
+    assert!(
+        compressed_size > client_limit as u64,
+        "gzip produced {compressed_size} bytes with a {client_limit}-byte limit"
+    );
+
+    let mut channel = ChannelConfig::default().with_send_compression(GrpcCompression::Gzip);
+    channel.max_send_message_size = client_limit as u64;
+    let client =
+        Client::with_manager_and_urls(ChannelManager::with_config(channel), [&config.endpoint]);
+    let mut writer = BulkInserter::new(client, &config.database)
+        .create_bulk_stream_writer(
+            &table,
+            Some(BulkWriteOptions::default().with_compression(CompressionType::None)),
+        )
+        .await
+        .unwrap();
+    let mut backfill = writer
+        .alloc_backfill_rows_buffer(
+            input.len(),
+            NonZeroUsize::new(input.len()).unwrap(),
+            NonZeroUsize::MAX,
+        )
+        .unwrap();
+    for row in input {
+        backfill.add_row(row).unwrap();
+    }
+
+    let ids = writer.write_rows_async(backfill).await.unwrap();
+    let responses = writer.finish_with_responses().await.unwrap();
+    assert_eq!(ids.len(), 2);
+    assert_eq!(
+        responses
+            .iter()
+            .map(|response| response.affected_rows())
+            .sum::<usize>(),
+        2
+    );
 }
 
 #[tokio::test]

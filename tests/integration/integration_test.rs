@@ -19,14 +19,16 @@ use arrow::util::display::array_value_to_string;
 use arrow_flight::{decode::FlightRecordBatchStream, Ticket};
 use futures::TryStreamExt;
 use greptimedb_ingester::api::v1::*;
+use greptimedb_ingester::channel_manager::{ChannelConfig, ChannelManager};
 use greptimedb_ingester::client::Client;
 use greptimedb_ingester::helpers::schema::*;
 use greptimedb_ingester::helpers::values::*;
 use greptimedb_ingester::{
-    database::Database, BulkInserter, BulkWriteOptions, ColumnDataType, Result, Rows as BulkRows,
-    TableSchema,
+    database::Database, BulkInserter, BulkWriteOptions, ColumnDataType, CompressionType, Result,
+    Rows as BulkRows, TableSchema,
 };
 use prost::Message;
+use std::num::NonZeroUsize;
 use std::option::Option;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -343,6 +345,40 @@ async fn test_bulk_stream_writer_sequential() -> Result<()> {
         );
     }
 
+    bulk_writer.finish().await?;
+
+    // The client limit is below the requested limit. Each of the two requests
+    // should still combine rows from different hours.
+    let channel_manager = ChannelManager::with_config(ChannelConfig {
+        max_send_message_size: 2_500,
+        ..Default::default()
+    });
+    let client = Client::with_manager_and_urls(channel_manager, [&config.endpoint]);
+    let mut bulk_writer = BulkInserter::new(client, &config.database)
+        .create_bulk_stream_writer(
+            &table_template,
+            Some(BulkWriteOptions::default().with_compression(CompressionType::None)),
+        )
+        .await?;
+    let mut backfill = bulk_writer.alloc_backfill_rows_buffer(
+        4,
+        NonZeroUsize::new(4).unwrap(),
+        NonZeroUsize::new(16 * 1024).unwrap(),
+    )?;
+    for hours_ago in 1..=4 {
+        backfill.add_row(greptimedb_ingester::Row::from_values(vec![
+            greptimedb_ingester::Value::TimestampMillisecond(current_time - hours_ago * 3_600_000),
+            greptimedb_ingester::Value::String("x".repeat(800)),
+            greptimedb_ingester::Value::Float64(20.0),
+            greptimedb_ingester::Value::Int64(1),
+        ]))?;
+    }
+    let ids = bulk_writer.write_rows_async(backfill).await?;
+    assert_eq!(ids.len(), 2);
+    for id in ids {
+        let response = bulk_writer.wait_for_response(id).await?;
+        assert_eq!(response.affected_rows(), 2);
+    }
     bulk_writer.finish().await?;
 
     assert_eq!(total_rows, batch_size * 3);

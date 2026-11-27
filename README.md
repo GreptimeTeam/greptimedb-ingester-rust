@@ -190,6 +190,16 @@ async fn main() -> greptimedb_ingester::Result<()> {
 > 3. **Automatic Column Addition**: GreptimeDB v1.3.0 and later can add new columns to an existing table when both the server's `auto_create_table` setting and the request hint allow it. The Rust writer defaults to `auto_create_table=false`; opt in with `create_bulk_stream_writer_with_auto_create_table(&table_template, options, true)`. New ordinary columns are inferred as fields.
 > 4. **Rows Within a Writer**: Every `Rows` batch must match its writer's schema, and positional row values must follow that schema's column order. Use `alloc_rows_buffer()` or `new_row()` to build compatible batches.
 
+For backfills with timestamps spread across many hours, use
+`alloc_backfill_rows_buffer(capacity, max_rows, max_message_bytes)` with the usual
+`write_rows` or `write_rows_async` methods. Both limits take a `NonZeroUsize`.
+Each request can span multiple hours and is capped by rows and encoded
+FlightData size before gRPC compression. The SDK also checks the client's
+gRPC send limit against the compressed message when transport compression is
+enabled. If a single row is too large, `BackfillRowTooLarge` reports the
+submitted request IDs and the zero-based offset of the first unsent row. Submit large imports in multiple buffers to
+bound the amount of data held by the client at once.
+
 ## When to Choose Which API
 
 | Scenario                   | API Choice         | Why                                     |

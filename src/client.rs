@@ -24,9 +24,9 @@ use tonic::transport::Channel;
 
 #[cfg(any(test, feature = "tls-ring"))]
 use crate::channel_manager::ChannelConfig;
-use crate::channel_manager::ChannelManager;
 #[cfg(feature = "tls-ring")]
 use crate::channel_manager::ClientTlsOption;
+use crate::channel_manager::{ChannelManager, GrpcCompression};
 use crate::load_balance::{LoadBalance, Loadbalancer};
 use crate::{error, Result};
 
@@ -126,10 +126,14 @@ impl Client {
     }
 
     pub fn send_compression(&self) -> Option<CompressionEncoding> {
-        let config = self.inner.channel_manager.config();
-        config
+        self.grpc_send_compression().map(CompressionEncoding::from)
+    }
+
+    pub(crate) fn grpc_send_compression(&self) -> Option<GrpcCompression> {
+        self.inner
+            .channel_manager
+            .config()
             .resolved_send_compression()
-            .map(CompressionEncoding::from)
     }
 
     pub fn accept_compression(&self) -> Option<CompressionEncoding> {
@@ -192,7 +196,6 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::GrpcCompression;
 
     #[test]
     #[allow(deprecated)]
